@@ -23,7 +23,7 @@ To install or update the plugin, follow these steps:
 
 1. Open your admin dashboard and navigate to `Plugins`.
 1. Select the `Catalog` tab on the top of the page.
-1. Under `Live TV`, select `Jellyfin Xtream`.
+1. Under `Live TV`, select `Octet Xtream`.
 1. (Optional) Select the desired plugin version.
 1. Click `Install`.
 1. Restart your Jellyfin server to complete the installation.

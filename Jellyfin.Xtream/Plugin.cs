@@ -58,7 +58,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     }
 
     /// <inheritdoc />
-    public override string Name => "Jellyfin Xtream";
+    public override string Name => "Octet Xtream";
 
     /// <inheritdoc />
     public override Guid Id => Guid.Parse("5d774c35-8567-46d3-a950-9bb8227a0c5d");

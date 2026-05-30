@@ -28,7 +28,7 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Xtream.Api;
 
 /// <summary>
-/// The Jellyfin Xtream configuration API.
+/// The Octet Xtream configuration API.
 /// </summary>
 [ApiController]
 [Route("[controller]")]
