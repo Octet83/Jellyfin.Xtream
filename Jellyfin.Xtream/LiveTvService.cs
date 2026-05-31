@@ -43,7 +43,8 @@ namespace Jellyfin.Xtream;
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
 /// <param name="memoryCache">Instance of the <see cref="IMemoryCache"/> interface.</param>
 /// <param name="xtreamClient">Instance of the <see cref="IXtreamClient"/> interface.</param>
-public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger<LiveTvService> logger, IMemoryCache memoryCache, IXtreamClient xtreamClient) : ILiveTvService, ISupportsDirectStreamProvider
+/// <param name="recordingService">Instance of the <see cref="RecordingService"/> class.</param>
+public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger<LiveTvService> logger, IMemoryCache memoryCache, IXtreamClient xtreamClient, RecordingService recordingService) : ILiveTvService, ISupportsDirectStreamProvider
 {
     /// <inheritdoc />
     public string Name => "Xtream Live";
@@ -75,19 +76,21 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
     /// <inheritdoc />
     public Task CancelTimerAsync(string timerId, CancellationToken cancellationToken)
     {
-        throw new NotImplementedException();
+        recordingService.CancelTimer(timerId);
+        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     public Task CreateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
     {
-        throw new NotImplementedException();
+        recordingService.CreateTimer(info);
+        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     public Task<IEnumerable<TimerInfo>> GetTimersAsync(CancellationToken cancellationToken)
     {
-        return Task.FromResult<IEnumerable<TimerInfo>>(new List<TimerInfo>());
+        return Task.FromResult<IEnumerable<TimerInfo>>(recordingService.GetAllTimers());
     }
 
     /// <inheritdoc />
@@ -111,7 +114,8 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
     /// <inheritdoc />
     public Task UpdateTimerAsync(TimerInfo updatedTimer, CancellationToken cancellationToken)
     {
-        throw new NotImplementedException();
+        recordingService.UpdateTimer(updatedTimer);
+        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
