@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Live TV recording (single timers)\n\nRecording a programme from the Live TV guide now works instead of failing with `NotImplementedException`.\n\n- Scheduling a recording persists a timer, captures the channel's stream to Jellyfin's DVR recording folder when it fires, and imports the result into the library.\n- Pending timers are re-armed on server restart.\n\n**Requires** Live TV DVR to be enabled (with a recording folder configured) for recordings to appear in the library. Series recordings are not yet supported.\n",
+        "checksum": "f89aa5eac32a7522d155b3315a5c9a02",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.1.0/octet-xtream_0.9.1.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-05-31T00:52:30Z",
+        "version": "0.9.1.0"
+      },
+      {
         "changelog": "Renommage du plugin en « Octet Xtream ».",
         "checksum": "aa40d8c20626b740e0de5335f43e3038",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.0.1/octet-xtream_0.9.0.1.zip",
