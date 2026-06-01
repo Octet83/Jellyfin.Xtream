@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Nouveautés\n\n### Onglet « Managed channels »\nNouvel onglet de configuration qui liste uniquement les chaînes Live TV sélectionnées, avec par chaîne :\n- **Catégorie** assignable (exposée comme tag Jellyfin pour le regroupement/filtrage), pré-remplie automatiquement.\n- **Réaffectation de la source EPG** (autre `stream_id`) + **aperçu du programme** en cours/à venir.\n- **Bouton Disable** qui retire la chaîne de la sélection.\n\n### Catch-up à l'heure calédonienne\n- Les jours et horaires du catch-up sont présentés dans un fuseau configurable (défaut **Pacific/Noumea**, UTC+11).\n- Les chaînes supportant le catch-up sont regroupées sous la catégorie **« A l'heure calédo »**.\n\n### Mode « live décalé » (optionnel)\n- Nouvelle option *Serve channels at Caledonian time* : ouvrir une chaîne catch-up lance un flux décalé aligné sur l'horloge locale (ex. le « 20h » de France 2 vu à 20h calédonien). Fuseau du fournisseur détecté automatiquement.\n- Les chaînes sans support catch-up sont masquées de Live TV quand ce mode est actif.",
+        "checksum": "783232921449a3693bf77001585d9e45",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.2.0/octet-xtream_0.9.2.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-06-01T00:29:55Z",
+        "version": "0.9.2.0"
+      },
+      {
         "changelog": "## Live TV recording (single timers)\n\nRecording a programme from the Live TV guide now works instead of failing with `NotImplementedException`.\n\n- Scheduling a recording persists a timer, captures the channel's stream to Jellyfin's DVR recording folder when it fires, and imports the result into the library.\n- Pending timers are re-armed on server restart.\n\n**Requires** Live TV DVR to be enabled (with a recording folder configured) for recordings to appear in the library. Series recordings are not yet supported.\n",
         "checksum": "f89aa5eac32a7522d155b3315a5c9a02",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.1.0/octet-xtream_0.9.1.0.zip",
