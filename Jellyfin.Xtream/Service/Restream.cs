@@ -90,7 +90,7 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         _pace = pace;
         MediaSource = mediaSource;
 
-        _buffer = new WrappedBufferStream(16 * 1024 * 1024); // 16MiB
+        _buffer = new WrappedBufferStream(32 * 1024 * 1024); // 32MiB — headroom for FFmpeg stalls on discontinuities
         _tokenSource = new CancellationTokenSource();
 
         OriginalStreamId = MediaSource.Id;

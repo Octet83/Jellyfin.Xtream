@@ -83,11 +83,12 @@ public class WrappedBufferReadStream : Stream
 
         if (gap > _sourceBuffer.BufferSize)
         {
-            // TODO: design good handling method.
-            // Options:
-            // - throw exception
-            // - skip to buffer.Position+1 to only read 'up-to-date' bytes.
-            throw new IOException("Reader cannot keep up");
+            // The reader fell more than a full buffer behind — typically a transient FFmpeg stall on a
+            // stream discontinuity in the source. The overtaken bytes are already gone, so rather than
+            // killing the whole stream (which froze playback), skip forward to recent data and carry on.
+            // The consumer sees a jump instead of a hard failure.
+            ReadHead = _sourceBuffer.TotalBytesWritten - (_sourceBuffer.BufferSize / 2);
+            gap = _sourceBuffer.TotalBytesWritten - ReadHead;
         }
 
         // The number of bytes that can be copied.
