@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## EPG décalé pour le mode « heure calédonienne »\n\nQuand une chaîne catch-up est servie décalée à l'heure calédonienne, son **guide des programmes (EPG) est désormais décalé du même offset** : le guide affiche ce qui est réellement à l'écran, et non la diffusion en temps réel.\n\nLes chaînes en direct réel ne sont pas affectées.",
+        "checksum": "45b28f9135abbca2f3bb72c3d8dd9d7d",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.4.0/octet-xtream_0.9.4.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-06-01T03:24:59Z",
+        "version": "0.9.4.0"
+      },
+      {
         "changelog": "## Correctifs du mode « heure calédonienne »\n\n- Les chaînes **sans catch-up** restent visibles dans leurs **catégories d'origine** (généralistes, infos, sport, …) — elles ne sont plus masquées.\n- Les chaînes **avec catch-up** sont toutes regroupées sous la catégorie unique **« A l'heure calédo »** (forcé côté serveur, quels que soient les overrides).\n- Seules les chaînes catch-up sont réellement décalées ; les autres conservent leur direct réel.\n- L'onglet « Managed channels » ne pré-remplit plus automatiquement la catégorie suggérée : seules les catégories saisies explicitement sont enregistrées.",
         "checksum": "55d8e6b10a09ebf5405579b69c91a13f",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.3.0/octet-xtream_0.9.3.0.zip",
