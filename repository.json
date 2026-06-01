@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Plafond anti-course par débit (chaînes catch-up sans PCR)\n\nLe pacing PCR seul échouait sur les chaînes dont le flux catch-up n'a pas de PCR exploitable (l'horloge média n'avançait jamais → rien ne freinait → course à ~86×, fenêtre de 24 h vidée en ~17 min, puis ça quittait).\n\nLe débit est maintenant aussi plafonné à **~1,25× le bitrate annoncé**, en permanence : le flux ne peut plus foncer, quel que soit l'état du PCR. Le PCR continue d'assurer le 1× exact quand il est présent (chaînes propres), et le plus contraignant des deux l'emporte. Le burst de démarrage est aussi limité.",
+        "checksum": "f894574f95e10c1344a439ddc1727268",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.6.2/octet-xtream_0.9.6.2.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-06-01T07:20:41Z",
+        "version": "0.9.6.2"
+      },
+      {
         "changelog": "## Pacing robuste aux discontinuités (chaînes catch-up)\n\nLa 0.9.6.0 calait l'horloge sur le premier PCR et la **re-calait à chaque saut PCR en arrière**. Les flux catch-up qui contiennent des coupures (timestamps qui reculent) re-calaient en boucle → le pacing ne s'enclenchait jamais → la chaîne **fonçait à nouveau (~37×)**, épuisait la fenêtre (gel) et amplifiait le **décalage audio** que FFmpeg produit sur un flux dont les timestamps reculent.\n\nDésormais le débit est calé sur le **temps média accumulé** : seuls les écarts PCR « propres » sont comptés (les sauts ≤0 ou >10 s sont ignorés comme discontinuités), et l'horloge murale n'est jamais remise en arrière. Une coupure ne peut plus casser le pacing ; les flux propres restent calés exactement à 1×.",
         "checksum": "3fc8a434c97fbc71e60c41b181dd15d1",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.6.1/octet-xtream_0.9.6.1.zip",
