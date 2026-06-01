@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Reconnexion automatique du flux (live & catch-up)\n\nLe restream ne faisait qu'**une seule** connexion à la source : quand le flux catch-up décalé (heure calédonienne) envoyait une fin de flux au bout de quelques minutes, le tampon se vidait et le lecteur était renvoyé sur la liste des chaînes.\n\nLe restream **se reconnecte désormais automatiquement** à la source quand celle-ci se coupe, dans le même tampon partagé, sans que le client ne voie de coupure. Pour les chaînes catch-up à l'heure calédonienne, la reconnexion **réaligne le départ sur « maintenant »** (le décalage étant constant, la lecture reprend de façon transparente). Les flux VOD/séries se terminent normalement.",
+        "checksum": "daa7e0a5a0a1e15996940dbd17b9c0af",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.5.0/octet-xtream_0.9.5.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-06-01T06:22:31Z",
+        "version": "0.9.5.0"
+      },
+      {
         "changelog": "## EPG décalé pour le mode « heure calédonienne »\n\nQuand une chaîne catch-up est servie décalée à l'heure calédonienne, son **guide des programmes (EPG) est désormais décalé du même offset** : le guide affiche ce qui est réellement à l'écran, et non la diffusion en temps réel.\n\nLes chaînes en direct réel ne sont pas affectées.",
         "checksum": "45b28f9135abbca2f3bb72c3d8dd9d7d",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.4.0/octet-xtream_0.9.4.0.zip",
