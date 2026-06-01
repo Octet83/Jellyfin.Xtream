@@ -189,7 +189,13 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         byte[] buf = new byte[TsPacketSize * 512]; // ~94 KiB, whole TS packets
         int leftover = 0;
         bool aligned = false;
-        long firstPcr = -1;
+
+        // Pace against accumulated media time rather than (pcr - firstPcr): catch-up streams contain
+        // splices where the PCR jumps backward or far forward. We add up only the "clean" PCR deltas and
+        // never rewind the wall clock, so a discontinuity can't make us re-base in a loop and race ahead.
+        long lastPcr = -1;
+        double mediaElapsedSeconds = 0;
+        const long MaxPcrDelta = 10 * 90000; // 10s in 90 kHz units; bigger = treat as a discontinuity
         Stopwatch clock = new Stopwatch();
 
         while (!cancellationToken.IsCancellationRequested)
@@ -231,26 +237,26 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                     continue;
                 }
 
-                if (firstPcr < 0)
+                if (lastPcr < 0)
                 {
-                    firstPcr = pcr;
+                    lastPcr = pcr;
                     clock.Restart();
                     continue;
                 }
 
-                double mediaSeconds = (pcr - firstPcr) / 90000.0;
+                long delta = pcr - lastPcr;
+                lastPcr = pcr;
 
-                // Re-base the clock on a discontinuity: a backward jump (PCR wrap / splice) or an
-                // implausibly large forward jump (a program-boundary PTS reset), which would otherwise
-                // make us sleep for minutes and freeze the picture.
-                if (mediaSeconds < 0 || mediaSeconds - clock.Elapsed.TotalSeconds > 30)
+                // Skip discontinuities (backward jump / wrap, or an implausibly large forward jump at a
+                // splice): they advance neither the media clock nor a re-base, so pacing stays engaged.
+                if (delta <= 0 || delta > MaxPcrDelta)
                 {
-                    firstPcr = pcr;
-                    clock.Restart();
                     continue;
                 }
 
-                TimeSpan ahead = TimeSpan.FromSeconds(mediaSeconds) - clock.Elapsed - PacingLead;
+                mediaElapsedSeconds += delta / 90000.0;
+
+                TimeSpan ahead = TimeSpan.FromSeconds(mediaElapsedSeconds) - clock.Elapsed - PacingLead;
                 if (ahead > TimeSpan.Zero)
                 {
                     await output.WriteAsync(buf.AsMemory(start, i - start), cancellationToken).ConfigureAwait(false);
