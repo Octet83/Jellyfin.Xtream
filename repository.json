@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Survivre aux discontinuités de la source (chaînes catch-up)\n\nAprès 18 min de lecture calée à 1×, l'archive catch-up de certaines chaînes contient une **discontinuité de timestamps** (le DTS saute de ~26 h, un splice côté provider). FFmpeg s'étrangle dessus, prend du retard, et le restream levait alors `Reader cannot keep up` → le flux était **tué** et la lecture **gelait**.\n\nDésormais : au lieu de planter, le lecteur **saute vers les données récentes** et continue (un micro-saut au lieu d'un gel). Le buffer du restream passe aussi de 16 à 32 MiB pour absorber les hoquets de FFmpeg. C'est un défaut de la source (archive du provider) ; ces changements permettent à la lecture de **récupérer** au lieu de mourir.",
+        "checksum": "08b888c206be88162b148e3464decaa0",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.6.3/octet-xtream_0.9.6.3.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-06-01T07:47:55Z",
+        "version": "0.9.6.3"
+      },
+      {
         "changelog": "## Plafond anti-course par débit (chaînes catch-up sans PCR)\n\nLe pacing PCR seul échouait sur les chaînes dont le flux catch-up n'a pas de PCR exploitable (l'horloge média n'avançait jamais → rien ne freinait → course à ~86×, fenêtre de 24 h vidée en ~17 min, puis ça quittait).\n\nLe débit est maintenant aussi plafonné à **~1,25× le bitrate annoncé**, en permanence : le flux ne peut plus foncer, quel que soit l'état du PCR. Le PCR continue d'assurer le 1× exact quand il est présent (chaînes propres), et le plus contraignant des deux l'emporte. Le burst de démarrage est aussi limité.",
         "checksum": "f894574f95e10c1344a439ddc1727268",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.6.2/octet-xtream_0.9.6.2.zip",
