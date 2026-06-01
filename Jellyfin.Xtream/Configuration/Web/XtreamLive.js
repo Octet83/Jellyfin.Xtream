@@ -10,7 +10,13 @@ export default function (view) {
 
     const getConfig = ApiClient.getPluginConfiguration(pluginId);
     const visible = view.querySelector("#Visible");
-    getConfig.then((config) => visible.checked = config.IsCatchupVisible);
+    const timezone = view.querySelector("#CatchupTimeZone");
+    const liveCaledonian = view.querySelector("#LiveAtCaledonianTime");
+    getConfig.then((config) => {
+      visible.checked = config.IsCatchupVisible;
+      timezone.value = config.CatchupTimeZoneId ?? '';
+      liveCaledonian.checked = config.LiveAtCaledonianTime;
+    });
     const table = view.querySelector('#LiveContent');
     Xtream.populateCategoriesTable(
       table,
@@ -23,6 +29,8 @@ export default function (view) {
 
         ApiClient.getPluginConfiguration(pluginId).then((config) => {
           config.IsCatchupVisible = visible.checked;
+          config.CatchupTimeZoneId = timezone.value.trim() || 'Pacific/Noumea';
+          config.LiveAtCaledonianTime = liveCaledonian.checked;
           config.LiveTv = data;
           ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
             Dashboard.processPluginConfigurationUpdateResult(result);

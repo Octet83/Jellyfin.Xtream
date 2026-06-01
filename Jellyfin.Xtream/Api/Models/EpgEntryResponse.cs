@@ -13,35 +13,37 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-namespace Jellyfin.Xtream.Service;
+using System;
+
+namespace Jellyfin.Xtream.Api.Models;
 
 /// <summary>
-/// An enum describing the Xtream stream types.
+/// A single EPG (TV guide) entry used to preview/verify a channel's program.
 /// </summary>
-public enum StreamType : int
+public class EpgEntryResponse
 {
     /// <summary>
-    /// Live IPTV.
+    /// Gets or sets the program title.
     /// </summary>
-    Live = 0,
+    public string Title { get; set; } = string.Empty;
 
     /// <summary>
-    /// Catch up IPTV.
+    /// Gets or sets the program description.
     /// </summary>
-    CatchUp = 1,
+    public string Description { get; set; } = string.Empty;
 
     /// <summary>
-    /// On-demand series grouped in seasons and episodes.
+    /// Gets or sets the UTC start time of the program.
     /// </summary>
-    Series = 2,
+    public DateTime Start { get; set; }
 
     /// <summary>
-    /// Video on-demand.
+    /// Gets or sets the UTC end time of the program.
     /// </summary>
-    Vod = 3,
+    public DateTime End { get; set; }
 
     /// <summary>
-    /// A continuous (infinite) catch-up stream used to present a live channel time-shifted to a target timezone.
+    /// Gets or sets a value indicating whether the program is currently playing.
     /// </summary>
-    CatchupLive = 4,
+    public bool NowPlaying { get; set; }
 }

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Mime;
@@ -21,6 +22,8 @@ using System.Threading.Tasks;
 using Jellyfin.Xtream.Api.Models;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
+using Jellyfin.Xtream.Configuration;
+using Jellyfin.Xtream.Service;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -35,6 +38,11 @@ namespace Jellyfin.Xtream.Api;
 [Produces(MediaTypeNames.Application.Json)]
 public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
 {
+    /// <summary>
+    /// The category automatically assigned to every channel that supports catch-up.
+    /// </summary>
+    public const string CatchupCategoryName = "A l'heure calédo";
+
     private static CategoryResponse CreateCategoryResponse(Category category) =>
         new()
         {
@@ -60,14 +68,40 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
             CatchupDuration = 0,
         };
 
-    private static ChannelResponse CreateChannelResponse(StreamInfo stream) =>
-        new()
+    private static ChannelResponse CreateChannelResponse(
+        StreamInfo stream,
+        Dictionary<int, string> categoryNames,
+        SerializableDictionary<int, ChannelOverrides> overrides)
+    {
+        int categoryId = stream.CategoryId ?? 0;
+        categoryNames.TryGetValue(categoryId, out string? categoryName);
+
+        ParsedName parsed = StreamService.ParseName(stream.Name);
+
+        // Channels that support catch-up are all grouped under a single dedicated category.
+        string suggested = stream.TvArchive
+            ? CatchupCategoryName
+            : parsed.Tags.FirstOrDefault()
+                ?? (string.IsNullOrEmpty(categoryName) ? string.Empty : categoryName);
+
+        overrides.TryGetValue(stream.StreamId, out ChannelOverrides? channelOverrides);
+
+        return new ChannelResponse
         {
             Id = stream.StreamId,
             LogoUrl = stream.StreamIcon,
             Name = stream.Name,
             Number = stream.Num,
+            XtreamCategoryId = categoryId,
+            XtreamCategoryName = categoryName ?? string.Empty,
+            SuggestedCategory = suggested,
+            Category = channelOverrides?.Category,
+            EpgChannelId = stream.EpgChannelId,
+            EpgStreamId = channelOverrides?.EpgStreamId,
+            HasCatchup = stream.TvArchive,
+            CatchupDuration = stream.TvArchiveDuration,
         };
+    }
 
     /// <summary>
     /// Test the configured provider.
@@ -189,16 +223,77 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     }
 
     /// <summary>
-    /// Get all configured TV channels.
+    /// Get all configured TV channels, enriched with category and override information.
     /// </summary>
     /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
-    /// <returns>An enumerable containing the streams.</returns>
+    /// <returns>An enumerable containing the channels.</returns>
     [Authorize(Policy = "RequiresElevation")]
     [HttpGet("LiveTv")]
-    public async Task<ActionResult<IEnumerable<StreamInfo>>> GetLiveTvChannels(CancellationToken cancellationToken)
+    public async Task<ActionResult<IEnumerable<ChannelResponse>>> GetLiveTvChannels(CancellationToken cancellationToken)
     {
-        IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false);
-        var channels = streams.Select(CreateChannelResponse).ToList();
+        Plugin plugin = Plugin.Instance;
+        List<Category> categories = await xtreamClient.GetLiveCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
+        Dictionary<int, string> categoryNames = categories
+            .GroupBy(c => c.CategoryId)
+            .ToDictionary(g => g.Key, g => g.First().CategoryName);
+
+        SerializableDictionary<int, ChannelOverrides> overrides = plugin.Configuration.LiveTvOverrides;
+        IEnumerable<StreamInfo> streams = await plugin.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false);
+        var channels = streams.Select(stream => CreateChannelResponse(stream, categoryNames, overrides)).ToList();
         return Ok(channels);
+    }
+
+    /// <summary>
+    /// Get a short EPG (TV guide) preview for the given stream, used to verify the program mapping.
+    /// Returns the currently playing program followed by the upcoming entries.
+    /// </summary>
+    /// <param name="streamId">The Xtream stream id whose EPG should be fetched.</param>
+    /// <param name="limit">The maximum number of entries to return.</param>
+    /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
+    /// <returns>An enumerable containing the EPG entries.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Epg/{streamId}")]
+    public async Task<ActionResult<IEnumerable<EpgEntryResponse>>> GetEpg(int streamId, [FromQuery] int limit, CancellationToken cancellationToken)
+    {
+        Plugin plugin = Plugin.Instance;
+        EpgListings epgs = await xtreamClient.GetEpgInfoAsync(plugin.Creds, streamId, cancellationToken).ConfigureAwait(false);
+        DateTime now = DateTime.UtcNow;
+        int max = limit > 0 ? limit : 5;
+
+        var entries = epgs.Listings
+            .OrderBy(e => e.Start)
+            .Where(e => e.End >= now)
+            .Take(max)
+            .Select(e => new EpgEntryResponse
+            {
+                Title = e.Title,
+                Description = e.Description,
+                Start = e.Start,
+                End = e.End,
+                NowPlaying = e.Start <= now && e.End > now,
+            })
+            .ToList();
+        return Ok(entries);
+    }
+
+    /// <summary>
+    /// Removes a channel from the Live TV selection (disables it). Persists the configuration and triggers a refresh.
+    /// </summary>
+    /// <param name="streamId">The Xtream stream id of the channel to disable.</param>
+    /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
+    /// <returns>NoContent on success, NotFound when the channel is not part of the selection.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("LiveTv/{streamId}/Disable")]
+    public async Task<ActionResult> DisableChannel(int streamId, CancellationToken cancellationToken)
+    {
+        Plugin plugin = Plugin.Instance;
+        bool removed = await plugin.StreamService.RemoveLiveStreamFromSelection(streamId, cancellationToken).ConfigureAwait(false);
+        if (!removed)
+        {
+            return NotFound();
+        }
+
+        plugin.UpdateConfiguration(plugin.Configuration);
+        return NoContent();
     }
 }

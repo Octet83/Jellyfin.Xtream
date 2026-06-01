@@ -34,4 +34,17 @@ public class ChannelOverrides
     /// Gets or sets the url of the channel logo.
     /// </summary>
     public string? LogoUrl { get; set; }
+
+    /// <summary>
+    /// Gets or sets the user defined category (group) for the channel.
+    /// When set, this value is exposed as a Jellyfin channel tag so the channel can be grouped/filtered in Live TV.
+    /// </summary>
+    public string? Category { get; set; }
+
+    /// <summary>
+    /// Gets or sets the Xtream stream id whose EPG should be used for this channel.
+    /// When set, the EPG (TV guide) is fetched using this stream id instead of the channel's own id.
+    /// This allows reassigning the correct guide data when the provider mapping is wrong.
+    /// </summary>
+    public int? EpgStreamId { get; set; }
 }

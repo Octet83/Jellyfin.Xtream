@@ -113,6 +113,8 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             CreateStatic("XtreamLive.js"),
             CreateStatic("XtreamLiveOverrides.html"),
             CreateStatic("XtreamLiveOverrides.js"),
+            CreateStatic("XtreamManagedChannels.html"),
+            CreateStatic("XtreamManagedChannels.js"),
             CreateStatic("XtreamSeries.html"),
             CreateStatic("XtreamSeries.js"),
             CreateStatic("XtreamVod.html"),

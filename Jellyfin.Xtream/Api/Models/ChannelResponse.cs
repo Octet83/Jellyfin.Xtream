@@ -39,4 +39,45 @@ public class ChannelResponse
     /// Gets or sets the url of the channel logo.
     /// </summary>
     public string LogoUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the Xtream category id the channel belongs to.
+    /// </summary>
+    public int XtreamCategoryId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the Xtream category name the channel belongs to.
+    /// </summary>
+    public string XtreamCategoryName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the automatically suggested category for the channel
+    /// (derived from name tags, the Xtream category, or catch-up support).
+    /// </summary>
+    public string SuggestedCategory { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the user defined category override currently configured for the channel.
+    /// </summary>
+    public string? Category { get; set; }
+
+    /// <summary>
+    /// Gets or sets the Xtream epg_channel_id (XMLTV identifier) reported by the provider.
+    /// </summary>
+    public string EpgChannelId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the configured EPG source override (an other Xtream stream id) if any.
+    /// </summary>
+    public int? EpgStreamId { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the channel supports catch-up (archive).
+    /// </summary>
+    public bool HasCatchup { get; set; }
+
+    /// <summary>
+    /// Gets or sets the catch-up archive duration in days.
+    /// </summary>
+    public int CatchupDuration { get; set; }
 }

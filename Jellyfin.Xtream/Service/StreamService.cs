@@ -186,6 +186,70 @@ public partial class StreamService(IXtreamClient xtreamClient)
     }
 
     /// <summary>
+    /// Removes a single Live TV stream from the configured selection (<see cref="PluginConfiguration.LiveTv"/>).
+    /// When the channel's category is fully selected (empty set), the full set is materialized first so that only
+    /// the requested channel is removed.
+    /// </summary>
+    /// <param name="streamId">The Xtream stream id to remove from the selection.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>True if the channel was found and removed, false otherwise.</returns>
+    public async Task<bool> RemoveLiveStreamFromSelection(int streamId, CancellationToken cancellationToken)
+    {
+        PluginConfiguration config = Plugin.Instance.Configuration;
+        IEnumerable<StreamInfo> streams = await xtreamClient.GetLiveStreamsAsync(Plugin.Instance.Creds, cancellationToken).ConfigureAwait(false);
+        StreamInfo? target = streams.FirstOrDefault((StreamInfo s) => s.StreamId == streamId);
+        if (target?.CategoryId is not int categoryId || !config.LiveTv.TryGetValue(categoryId, out HashSet<int>? selected))
+        {
+            return false;
+        }
+
+        if (selected.Count == 0)
+        {
+            // An empty set means "all channels in this category are selected".
+            // Materialize the full set so that only the requested channel is removed.
+            HashSet<int> all = [.. streams.Where((StreamInfo s) => s.CategoryId == categoryId).Select((StreamInfo s) => s.StreamId)];
+            all.Remove(streamId);
+            config.LiveTv[categoryId] = all;
+        }
+        else
+        {
+            if (!selected.Remove(streamId))
+            {
+                return false;
+            }
+        }
+
+        // Drop the channel overrides as the channel is no longer part of the selection.
+        config.LiveTvOverrides.Remove(streamId);
+        return true;
+    }
+
+    /// <summary>
+    /// Gets the timezone used to present Catch-up days and program times,
+    /// as configured by <see cref="PluginConfiguration.CatchupTimeZoneId"/>.
+    /// Falls back to a fixed UTC+11 (New Caledonia) zone when the id is unknown on the host.
+    /// </summary>
+    /// <returns>The catch-up <see cref="TimeZoneInfo"/>.</returns>
+    public static TimeZoneInfo GetCatchupTimeZone()
+    {
+        string id = Plugin.Instance.Configuration.CatchupTimeZoneId;
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            id = "Pacific/Noumea";
+        }
+
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById(id);
+        }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            // New Caledonia is a fixed UTC+11 offset without DST.
+            return TimeZoneInfo.CreateCustomTimeZone("Pacific/Noumea", TimeSpan.FromHours(11), "New Caledonia", "New Caledonia");
+        }
+    }
+
+    /// <summary>
     /// Gets an channel item info for the category.
     /// </summary>
     /// <param name="prefix">The channel category prefix.</param>
@@ -388,13 +452,13 @@ public partial class StreamService(IXtreamClient xtreamClient)
             uri += $".{extension}";
         }
 
-        if (type == StreamType.CatchUp)
+        if (type == StreamType.CatchUp || type == StreamType.CatchupLive)
         {
             string? startString = start?.ToString("yyyy'-'MM'-'dd':'HH'-'mm", CultureInfo.InvariantCulture);
             uri = $"{config.BaseUrl}/streaming/timeshift.php?username={config.Username}&password={config.Password}&stream={id}&start={startString}&duration={durationMinutes}";
         }
 
-        bool isLive = type == StreamType.Live;
+        bool isLive = type == StreamType.Live || type == StreamType.CatchupLive;
         return new MediaSourceInfo()
         {
             Container = extension,

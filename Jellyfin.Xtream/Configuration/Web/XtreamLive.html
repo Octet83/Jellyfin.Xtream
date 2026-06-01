@@ -9,6 +9,24 @@
             <span>Show the catch-up channel to users</span>
           </label>
         </div>
+        <div class="inputContainer">
+          <label class="inputLabel inputLabelUnfocused" for="CatchupTimeZone">Catch-up timezone</label>
+          <input is="emby-input" id="CatchupTimeZone" name="CatchupTimeZone" type="text" />
+          <div class="fieldDescription">
+            IANA timezone id used to present catch-up days and program times (default: Pacific/Noumea, New Caledonia / UTC+11).
+          </div>
+        </div>
+        <div class="checkboxContainer checkboxContainer-withDescription">
+          <label>
+            <input is="emby-checkbox" id="LiveAtCaledonianTime" name="LiveAtCaledonianTime" type="checkbox" />
+            <span>Serve channels at Caledonian time (live time-shift)</span>
+          </label>
+          <div class="fieldDescription">
+            When enabled, opening a catch-up capable channel plays what the provider broadcast at the same local
+            wall-clock time (e.g. France 2's "20h" shown at 20:00 Caledonian time). Channels without catch-up support
+            are hidden from Live TV while this is enabled.
+          </div>
+        </div>
         <div class="sectionTitleContainer flex align-items-center">
           <h2 class="sectionTitle">Channel selection</h2>
         </div>

@@ -34,3 +34,65 @@
 .overrides-table thead th:first-child {
   width: 0;
 }
+
+.managed-channels-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.managed-channels-table tbody {
+  vertical-align: top;
+}
+
+.managed-channels-table th,
+.managed-channels-table td {
+  padding: 0.4em 0.5em;
+}
+
+.managed-channels-table th:nth-child(2) {
+  width: 25%;
+}
+
+.managed-channels-table th:nth-child(3),
+.managed-channels-table th:nth-child(4) {
+  width: 18%;
+}
+
+.managed-channel-logo {
+  width: 48px;
+  height: 36px;
+  object-fit: contain;
+}
+
+.managed-channel-meta {
+  display: block;
+  opacity: 0.7;
+}
+
+.managed-channel-badge {
+  display: inline-block;
+  padding: 0 0.4em;
+  border-radius: 0.4em;
+  background: rgba(0, 164, 220, 0.25);
+  font-size: 0.85em;
+}
+
+.managed-channel-guide {
+  margin-top: 0.4em;
+}
+
+.managed-channel-guide-line {
+  display: block;
+  opacity: 0.85;
+}
+
+.managed-channel-guide-now {
+  font-weight: bold;
+  opacity: 1;
+}
+
+.managed-channel-guide-empty {
+  display: block;
+  opacity: 0.6;
+  font-style: italic;
+}

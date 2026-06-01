@@ -152,16 +152,19 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
             ?? throw new ArgumentException($"Channel with id {channelId} not found in category {categoryId}");
         ParsedName parsedName = StreamService.ParseName(channel.Name);
 
+        TimeZoneInfo tz = StreamService.GetCatchupTimeZone();
+        DateTime todayLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, tz).Date;
+
         List<ChannelItemInfo> items = [];
         for (int i = 0; i <= channel.TvArchiveDuration; i++)
         {
-            DateTime channelDay = DateTime.Today.AddDays(-i);
+            DateTime channelDay = todayLocal.AddDays(-i);
             int day = (int)(channelDay - DateTime.UnixEpoch).TotalDays;
             items.Add(new()
             {
                 Id = StreamService.ToGuid(StreamService.CatchupPrefix, channel.CategoryId ?? 0, channel.StreamId, day).ToString(),
                 ImageUrl = channel.StreamIcon,
-                Name = channelDay.ToLocalTime().ToString("ddd dd'-'MM'-'yyyy", CultureInfo.InvariantCulture),
+                Name = channelDay.ToString("ddd dd'-'MM'-'yyyy", CultureInfo.InvariantCulture),
                 Tags = new List<string>(parsedName.Tags),
                 Type = ChannelItemType.Folder,
             });
@@ -177,8 +180,12 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
 
     private async Task<ChannelItemResult> GetStreams(int categoryId, int channelId, int day, CancellationToken cancellationToken)
     {
-        DateTime start = DateTime.UnixEpoch.AddDays(day);
-        DateTime end = start.AddDays(1);
+        // Present the selected day using the configured catch-up timezone (New Caledonia by default),
+        // so the day boundaries and program times always reflect Caledonian time regardless of the server timezone.
+        TimeZoneInfo tz = StreamService.GetCatchupTimeZone();
+        DateTime dayLocalMidnight = DateTime.UnixEpoch.AddDays(day);
+        DateTime startUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(dayLocalMidnight, DateTimeKind.Unspecified), tz);
+        DateTime endUtc = startUtc.AddDays(1);
         Plugin plugin = Plugin.Instance;
 
         List<StreamInfo> streams = await xtreamClient.GetLiveStreamsByCategoryAsync(plugin.Creds, categoryId, cancellationToken).ConfigureAwait(false);
@@ -201,7 +208,7 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
                             Id = StreamService.ToGuid(StreamService.CatchupStreamPrefix, channelId, 0, day).ToString(),
                             IsLiveStream = false,
                             MediaSources = [
-                                plugin.StreamService.GetMediaSourceInfo(StreamType.CatchUp, channelId, start: start, durationMinutes: durationMinutes)
+                                plugin.StreamService.GetMediaSourceInfo(StreamType.CatchUp, channelId, start: dayLocalMidnight, durationMinutes: durationMinutes)
                             ],
                             MediaType = ChannelMediaType.Video,
                             Name = $"No EPG available",
@@ -213,11 +220,11 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
             };
         }
 
-        foreach (EpgInfo epg in epgs.Listings.Where(epg => epg.Start <= end && epg.End >= start))
+        foreach (EpgInfo epg in epgs.Listings.Where(epg => epg.Start <= endUtc && epg.End >= startUtc))
         {
             ParsedName parsedName = StreamService.ParseName(epg.Title);
             int durationMinutes = (int)Math.Ceiling((epg.End - epg.Start).TotalMinutes);
-            string dateTitle = epg.Start.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
+            string dateTitle = TimeZoneInfo.ConvertTimeFromUtc(epg.Start, tz).ToString("HH:mm", CultureInfo.InvariantCulture);
             List<MediaSourceInfo> sources = [
                 plugin.StreamService.GetMediaSourceInfo(StreamType.CatchUp, channelId, start: epg.StartLocalTime, durationMinutes: durationMinutes)
             ];

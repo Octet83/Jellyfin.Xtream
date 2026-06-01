@@ -1,0 +1,44 @@
+<div id="XtreamManagedChannelsPage" data-role="page" class="page type-interior pluginConfigurationPage withTabs"
+  data-require="emby-input,emby-button" data-controller="__plugin/XtreamManagedChannels.js">
+  <div data-role="content">
+    <div class="content-primary">
+      <form id="XtreamManagedChannelsForm">
+        <div class="sectionTitleContainer flex align-items-center">
+          <h2 class="sectionTitle">Selected channels</h2>
+        </div>
+        <p class="fieldDescription">
+          Manage the channels you selected on the Live TV tab: assign a category (used as a Jellyfin tag for grouping),
+          verify and reassign the TV guide (EPG), or disable a channel. Channels with catch-up are grouped under
+          "A l'heure calédo".
+        </p>
+        <div class="inputContainer">
+          <input id="ChannelFilter" type="text" is="emby-input" label="Filter" placeholder="Filter channels…" />
+        </div>
+        <datalist id="Categories"></datalist>
+        <datalist id="EpgSources"></datalist>
+        <div class="inputContainer">
+          <table class="managed-channels-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Channel</th>
+                <th>Category</th>
+                <th>EPG source</th>
+                <th>Guide</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="ManagedChannels">
+
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+            <span>Save</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

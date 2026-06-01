@@ -83,5 +83,20 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the channel override configuration for Live TV.
     /// </summary>
     public SerializableDictionary<int, ChannelOverrides> LiveTvOverrides { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the IANA timezone id used to present Catch-up days and program times.
+    /// Defaults to New Caledonia (Pacific/Noumea, UTC+11) so the catch-up guide always reflects Caledonian time
+    /// regardless of the Jellyfin server timezone.
+    /// </summary>
+    public string CatchupTimeZoneId { get; set; } = "Pacific/Noumea";
+
+    /// <summary>
+    /// Gets or sets a value indicating whether catch-up capable channels are served as a live stream
+    /// time-shifted to the catch-up timezone (<see cref="CatchupTimeZoneId"/>).
+    /// When enabled, opening such a channel plays what the provider broadcast at the same local wall-clock time,
+    /// and channels without catch-up support are hidden from Live TV.
+    /// </summary>
+    public bool LiveAtCaledonianTime { get; set; }
 }
 #pragma warning restore CA2227
