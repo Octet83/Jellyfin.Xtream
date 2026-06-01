@@ -308,15 +308,21 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
         }
 
         MediaSourceInfo mediaSourceInfo;
+        Func<string>? urlProvider = null;
         if (useCaledonianShift)
         {
             // Serve the channel time-shifted so that the provider's broadcast aligns with the target (Caledonian) wall-clock.
             TimeZoneInfo providerTz = await GetProviderTimeZoneAsync(cancellationToken).ConfigureAwait(false);
-            DateTime providerStart = GetCaledonianAlignedStart(providerTz);
 
             // Allow the stream to keep playing forward (it stays behind the live edge by the timezone offset).
             const int durationMinutes = 24 * 60;
-            mediaSourceInfo = plugin.StreamService.GetMediaSourceInfo(StreamType.CatchupLive, channel, start: providerStart, durationMinutes: durationMinutes, restream: true);
+            mediaSourceInfo = plugin.StreamService.GetMediaSourceInfo(StreamType.CatchupLive, channel, start: GetCaledonianAlignedStart(providerTz), durationMinutes: durationMinutes, restream: true);
+
+            // When the upstream catch-up connection drops, reconnect with the start re-aligned to "now".
+            // The Caledonian offset is constant, so the new start matches where the stream was — seamless.
+            urlProvider = () => plugin.StreamService
+                .GetMediaSourceInfo(StreamType.CatchupLive, channel, start: GetCaledonianAlignedStart(providerTz), durationMinutes: durationMinutes, restream: true)
+                .Path;
         }
         else
         {
@@ -327,7 +333,7 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
 
         if (stream == null)
         {
-            stream = new Restream(appHost, httpClientFactory, logger, mediaSourceInfo);
+            stream = new Restream(appHost, httpClientFactory, logger, mediaSourceInfo, urlProvider);
             await stream.Open(cancellationToken).ConfigureAwait(false);
         }
 

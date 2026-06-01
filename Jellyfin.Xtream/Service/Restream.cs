@@ -51,6 +51,7 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     private readonly ILogger _logger;
     private readonly CancellationTokenSource _tokenSource;
     private readonly string _url;
+    private readonly Func<string>? _urlProvider;
 
     private Task? _copyTask;
     private Stream? _inputStream;
@@ -62,10 +63,17 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// <param name="httpClientFactory">Instance of the <see cref="IHttpClientFactory"/> interface.</param>
     /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
     /// <param name="mediaSource">The media which must be restreamed.</param>
-    public Restream(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger logger, MediaSourceInfo mediaSource)
+    /// <param name="urlProvider">
+    /// Optional factory returning a fresh upstream URL whenever the restream reconnects after an
+    /// upstream EOF (live/catch-up only). For time-shifted catch-up channels this re-aligns the
+    /// <c>start</c> to "now", which — the offset being constant — resumes seamlessly. When null the
+    /// original <see cref="MediaSourceInfo.Path"/> is reused on every reconnect.
+    /// </param>
+    public Restream(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger logger, MediaSourceInfo mediaSource, Func<string>? urlProvider = null)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _urlProvider = urlProvider;
         MediaSource = mediaSource;
 
         _buffer = new WrappedBufferStream(16 * 1024 * 1024); // 16MiB
@@ -102,42 +110,118 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// <inheritdoc />
     public async Task Open(CancellationToken openCancellationToken)
     {
-        if (_inputStream != null)
+        if (_copyTask != null)
         {
             _logger.LogWarning("Restream for channel {ChannelId} is already open.", MediaSource.Id);
             return;
         }
 
+        _logger.LogInformation("Starting restream for channel {ChannelId}.", MediaSource.Id);
+
+        // Await the first connection so the buffer starts filling before Open returns; later
+        // upstream EOFs are handled in the background by ConnectAndPump's continuation.
+        await ConnectAndPumpAsync(openCancellationToken).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Connects to the (possibly re-aligned) upstream URL and starts copying it into the shared buffer.
+    /// When the upstream ends, the continuation reconnects automatically for live/catch-up streams so
+    /// the consumer never sees an EOF; non-infinite streams (VOD/series) end normally.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    private async Task ConnectAndPumpAsync(CancellationToken cancellationToken)
+    {
         string channelId = MediaSource.Id;
-        _logger.LogInformation("Starting restream for channel {ChannelId}.", channelId);
+        string url = _urlProvider?.Invoke() ?? _url;
 
         // Response stream is disposed manually.
         HttpResponseMessage response = await _httpClientFactory.CreateClient(NamedClient.Default)
-            .GetAsync(_url, HttpCompletionOption.ResponseHeadersRead, openCancellationToken)
+            .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(true);
-        _logger.LogDebug("Stream for channel {ChannelId} using url {Url}", channelId, _url);
+        _logger.LogDebug("Stream for channel {ChannelId} using url {Url}", channelId, url);
 
         // Handle a manual redirect in the case of a HTTPS to HTTP downgrade.
         if (_redirects.Contains(response.StatusCode))
         {
             _logger.LogDebug("Stream for channel {ChannelId} redirected to url {Url}", channelId, response.Headers.Location);
             response = await _httpClientFactory.CreateClient(NamedClient.Default)
-                .GetAsync(response.Headers.Location, HttpCompletionOption.ResponseHeadersRead, openCancellationToken)
+                .GetAsync(response.Headers.Location, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(true);
         }
 
-        _inputStream = await response.Content.ReadAsStreamAsync(CancellationToken.None).ConfigureAwait(false);
-        _copyTask = _inputStream.CopyToAsync(_buffer, _tokenSource.Token)
+        Stream input = await response.Content.ReadAsStreamAsync(CancellationToken.None).ConfigureAwait(false);
+        _inputStream = input;
+        _copyTask = input.CopyToAsync(_buffer, _tokenSource.Token)
             .ContinueWith(
-                (Task t) =>
-                {
-                    _logger.LogInformation("Restream for channel {ChannelId} finished with state {Status}", MediaSource.Id, t.Status);
-                    _inputStream.Close();
-                    _inputStream = null;
-                },
+                OnUpstreamEnded,
                 CancellationToken.None,
                 TaskContinuationOptions.None,
                 TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Runs when the upstream copy finishes. Reconnects (after a short backoff) for live/catch-up
+    /// streams that were not deliberately closed, otherwise lets the stream end.
+    /// </summary>
+    /// <param name="task">The completed copy task.</param>
+    private void OnUpstreamEnded(Task task)
+    {
+        _logger.LogInformation("Restream upstream for channel {ChannelId} finished with state {Status}", MediaSource.Id, task.Status);
+        try
+        {
+            _inputStream?.Close();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Error closing upstream for channel {ChannelId}", MediaSource.Id);
+        }
+
+        _inputStream = null;
+
+        // The consumer left, or this is a finite (VOD/series) stream: let it end.
+        if (_tokenSource.IsCancellationRequested || !MediaSource.IsInfiniteStream)
+        {
+            return;
+        }
+
+        _ = ReconnectAsync();
+    }
+
+    /// <summary>
+    /// Reconnects the upstream after a short delay, retrying until the consumer disconnects. Keeps the
+    /// shared buffer alive so the client keeps reading across the gap instead of hitting an EOF.
+    /// </summary>
+    private async Task ReconnectAsync()
+    {
+        try
+        {
+            // Small backoff so an upstream that EOFs instantly can't spin a tight loop.
+            await Task.Delay(TimeSpan.FromMilliseconds(500), _tokenSource.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        if (_tokenSource.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            _logger.LogInformation("Reconnecting restream upstream for channel {ChannelId}.", MediaSource.Id);
+            await ConnectAndPumpAsync(_tokenSource.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Consumer disconnected during reconnect; nothing to do.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Restream reconnect failed for channel {ChannelId}; retrying.", MediaSource.Id);
+            _ = ReconnectAsync();
+        }
     }
 
     /// <inheritdoc />
