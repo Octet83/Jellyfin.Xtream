@@ -38,11 +38,6 @@ namespace Jellyfin.Xtream.Api;
 [Produces(MediaTypeNames.Application.Json)]
 public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
 {
-    /// <summary>
-    /// The category automatically assigned to every channel that supports catch-up.
-    /// </summary>
-    public const string CatchupCategoryName = "A l'heure calédo";
-
     private static CategoryResponse CreateCategoryResponse(Category category) =>
         new()
         {
@@ -80,7 +75,7 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
 
         // Channels that support catch-up are all grouped under a single dedicated category.
         string suggested = stream.TvArchive
-            ? CatchupCategoryName
+            ? StreamService.CatchupCategoryName
             : parsed.Tags.FirstOrDefault()
                 ?? (string.IsNullOrEmpty(categoryName) ? string.Empty : categoryName);
 

@@ -37,6 +37,11 @@ namespace Jellyfin.Xtream.Service;
 public partial class StreamService(IXtreamClient xtreamClient)
 {
     /// <summary>
+    /// The category automatically assigned to every catch-up capable channel when the Caledonian-time mode is enabled.
+    /// </summary>
+    public const string CatchupCategoryName = "A l'heure calédo";
+
+    /// <summary>
     /// The id prefix for VOD category channel items.
     /// </summary>
     public const int VodCategoryPrefix = 0x5d774c35;

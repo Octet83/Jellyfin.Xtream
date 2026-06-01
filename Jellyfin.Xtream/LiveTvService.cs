@@ -62,21 +62,24 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
         List<ChannelInfo> items = [];
         foreach (StreamInfo channel in await plugin.StreamService.GetLiveStreamsWithOverrides(cancellationToken).ConfigureAwait(false))
         {
-            // In Caledonian-time mode only catch-up capable channels can be time-shifted; hide the others.
-            if (caledonianMode && !channel.TvArchive)
-            {
-                continue;
-            }
-
             ParsedName parsed = StreamService.ParseName(channel.Name);
+            overrides.TryGetValue(channel.StreamId, out ChannelOverrides? channelOverrides);
 
-            // Expose the user defined category (if any) as the primary Jellyfin tag so channels can be grouped/filtered.
-            List<string> tags = [.. parsed.Tags];
-            if (overrides.TryGetValue(channel.StreamId, out ChannelOverrides? channelOverrides)
-                && !string.IsNullOrWhiteSpace(channelOverrides.Category))
+            string[] tags;
+            if (caledonianMode && channel.TvArchive)
             {
-                tags.RemoveAll(t => string.Equals(t, channelOverrides.Category, StringComparison.OrdinalIgnoreCase));
-                tags.Insert(0, channelOverrides.Category);
+                // Catch-up channels are all grouped under a single dedicated category in Caledonian mode.
+                tags = [StreamService.CatchupCategoryName];
+            }
+            else if (!string.IsNullOrWhiteSpace(channelOverrides?.Category))
+            {
+                // A user defined category replaces the channel's default categories.
+                tags = [channelOverrides.Category];
+            }
+            else
+            {
+                // Default categories parsed from the channel name.
+                tags = parsed.Tags;
             }
 
             items.Add(new ChannelInfo()
@@ -85,7 +88,7 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
                 Number = channel.Num.ToString(CultureInfo.InvariantCulture),
                 ImageUrl = channel.StreamIcon,
                 Name = parsed.Title,
-                Tags = [.. tags],
+                Tags = tags,
             });
         }
 
@@ -246,8 +249,17 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
         }
 
         Plugin plugin = Plugin.Instance;
-        MediaSourceInfo mediaSourceInfo;
+
+        // Only catch-up capable channels can be time-shifted; the others stay on the real live feed.
+        bool useCaledonianShift = false;
         if (plugin.Configuration.LiveAtCaledonianTime)
+        {
+            IEnumerable<StreamInfo> streams = await plugin.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false);
+            useCaledonianShift = streams.Any(s => s.StreamId == channel && s.TvArchive);
+        }
+
+        MediaSourceInfo mediaSourceInfo;
+        if (useCaledonianShift)
         {
             // Serve the channel time-shifted so that the provider's broadcast aligns with the target (Caledonian) wall-clock.
             TimeZoneInfo providerTz = await GetProviderTimeZoneAsync(cancellationToken).ConfigureAwait(false);

@@ -13,11 +13,6 @@ export default function (view) {
     const tr = document.createElement('tr');
     tr.dataset['channelId'] = channel.Id;
 
-    // Seed the category with the auto-suggested value so unedited channels still get categorized on save.
-    if (!overrides.Category && channel.SuggestedCategory) {
-      overrides.Category = channel.SuggestedCategory;
-    }
-
     // --- Logo ---
     let td = document.createElement('td');
     if (channel.LogoUrl) {
