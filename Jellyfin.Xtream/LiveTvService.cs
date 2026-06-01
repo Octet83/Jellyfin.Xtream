@@ -227,9 +227,58 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
             memoryCache.Set(key, items, DateTimeOffset.Now.AddMinutes(10));
         }
 
+        // Catch-up channels served at Caledonian time play the provider's broadcast time-shifted
+        // (see GetChannelStreamWithDirectStreamProvider). Shift their EPG by the same amount so the
+        // guide reflects what is actually on screen rather than the real-time broadcast.
+        TimeSpan shift = await GetCaledonianProgramShiftAsync(streamId, cancellationToken).ConfigureAwait(false);
+        if (shift != TimeSpan.Zero)
+        {
+            items = items!.Select(epg => new ProgramInfo
+            {
+                Id = epg.Id,
+                ChannelId = epg.ChannelId,
+                StartDate = epg.StartDate + shift,
+                EndDate = epg.EndDate + shift,
+                Name = epg.Name,
+                Overview = epg.Overview,
+            }).ToList();
+        }
+
         return from epg in items
                where epg.EndDate >= startDateUtc && epg.StartDate < endDateUtc
                select epg;
+    }
+
+    /// <summary>
+    /// Computes the time span by which the given channel's EPG must be shifted so that the program guide
+    /// matches the Caledonian-time catch-up stream. The shift mirrors <see cref="GetCaledonianAlignedStart"/>:
+    /// the content on screen always has the provider-local time-of-day equal to the current Caledonian
+    /// wall-clock, so the whole schedule is shifted by a single (near-constant) offset.
+    /// </summary>
+    /// <param name="streamId">The Xtream stream id of the channel.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns><see cref="TimeSpan.Zero"/> when the channel is served live, otherwise the EPG shift to apply.</returns>
+    private async Task<TimeSpan> GetCaledonianProgramShiftAsync(int streamId, CancellationToken cancellationToken)
+    {
+        Plugin plugin = Plugin.Instance;
+        if (!plugin.Configuration.LiveAtCaledonianTime)
+        {
+            return TimeSpan.Zero;
+        }
+
+        // Only catch-up capable channels are time-shifted; the others stay on the real live feed.
+        IEnumerable<StreamInfo> streams = await plugin.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false);
+        if (!streams.Any(s => s.StreamId == streamId && s.TvArchive))
+        {
+            return TimeSpan.Zero;
+        }
+
+        TimeZoneInfo providerTz = await GetProviderTimeZoneAsync(cancellationToken).ConfigureAwait(false);
+        DateTime providerStartLocal = GetCaledonianAlignedStart(providerTz);
+        DateTime contentStartUtc = DateTime.SpecifyKind(
+            providerStartLocal - providerTz.GetUtcOffset(providerStartLocal),
+            DateTimeKind.Utc);
+        return DateTime.UtcNow - contentStartUtc;
     }
 
     /// <inheritdoc />
