@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Lecture des chaînes catch-up (heure calédonienne) débitée à 1×\n\nLe provider envoie le flux catch-up/timeshift comme un **téléchargement rapide** (et non un direct à 1×) : le lecteur fonçait à travers ~24 h de contenu en quelques secondes, le tampon débordait, et la chaîne s'arrêtait au bout de quelques minutes. La reconnexion auto de la 0.9.5.0 aggravait le tout (gels et **retours en arrière** quand le départ était ré-aligné, et flux abandonnés qui bouclaient à l'infini).\n\nLe restream **débite désormais le flux à ~1× le temps réel** grâce à l'horloge PCR du MPEG-TS (avec re-calage sur les discontinuités) : le lecteur suit à la bonne cadence, le tampon reste petit, et la chaîne tient dans la durée. La reconnexion ne s'active plus que tant qu'un spectateur est présent (fini la tempête de connexions). Les chaînes en direct réel ne sont pas affectées.",
+        "checksum": "5629905559580d9f79d99c0c092df0f9",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.6.0/octet-xtream_0.9.6.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-06-01T06:40:37Z",
+        "version": "0.9.6.0"
+      },
+      {
         "changelog": "## Reconnexion automatique du flux (live & catch-up)\n\nLe restream ne faisait qu'**une seule** connexion à la source : quand le flux catch-up décalé (heure calédonienne) envoyait une fin de flux au bout de quelques minutes, le tampon se vidait et le lecteur était renvoyé sur la liste des chaînes.\n\nLe restream **se reconnecte désormais automatiquement** à la source quand celle-ci se coupe, dans le même tampon partagé, sans que le client ne voie de coupure. Pour les chaînes catch-up à l'heure calédonienne, la reconnexion **réaligne le départ sur « maintenant »** (le décalage étant constant, la lecture reprend de façon transparente). Les flux VOD/séries se terminent normalement.",
         "checksum": "daa7e0a5a0a1e15996940dbd17b9c0af",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.5.0/octet-xtream_0.9.5.0.zip",
