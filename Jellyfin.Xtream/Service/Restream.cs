@@ -186,17 +186,24 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// <param name="cancellationToken">The cancellation token.</param>
     private async Task PaceCopyAsync(Stream input, Stream output, CancellationToken cancellationToken)
     {
+        // Anti-race ceiling: never deliver faster than ~1.25x the declared bitrate. This alone keeps the
+        // stream from racing even when the PCR clock is unusable (some catch-up feeds have no/garbled PCR),
+        // so the 24h window can't be drained in minutes.
+        long bitrateBits = MediaSource.Bitrate > 0 ? MediaSource.Bitrate.Value : 8_000_000;
+        double targetBytesPerSecond = (bitrateBits / 8.0) * 1.25;
+        double leadSeconds = PacingLead.TotalSeconds;
+
         byte[] buf = new byte[TsPacketSize * 512]; // ~94 KiB, whole TS packets
         int leftover = 0;
         bool aligned = false;
 
-        // Pace against accumulated media time rather than (pcr - firstPcr): catch-up streams contain
-        // splices where the PCR jumps backward or far forward. We add up only the "clean" PCR deltas and
-        // never rewind the wall clock, so a discontinuity can't make us re-base in a loop and race ahead.
+        // Fine 1x pacing from the PCR clock when present: accumulate only "clean" PCR deltas (catch-up
+        // streams splice timelines, so a backward/huge jump is ignored rather than re-based in a loop).
         long lastPcr = -1;
         double mediaElapsedSeconds = 0;
         const long MaxPcrDelta = 10 * 90000; // 10s in 90 kHz units; bigger = treat as a discontinuity
-        Stopwatch clock = new Stopwatch();
+        long bytesDelivered = 0;
+        Stopwatch clock = Stopwatch.StartNew();
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -227,8 +234,7 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
             int packets = (available - start) / TsPacketSize;
             int end = start + (packets * TsPacketSize);
 
-            // Walk the packets; whenever the media clock (PCR) gets more than PacingLead ahead of
-            // wall-clock, flush what we have and sleep so the consumer reads at real time.
+            // Accumulate clean PCR deltas (no sleeping here; pacing is applied per chunk below).
             for (int i = start; i < end; i += TsPacketSize)
             {
                 long pcr = TryReadPcr(buf, i);
@@ -240,37 +246,37 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                 if (lastPcr < 0)
                 {
                     lastPcr = pcr;
-                    clock.Restart();
                     continue;
                 }
 
                 long delta = pcr - lastPcr;
                 lastPcr = pcr;
-
-                // Skip discontinuities (backward jump / wrap, or an implausibly large forward jump at a
-                // splice): they advance neither the media clock nor a re-base, so pacing stays engaged.
-                if (delta <= 0 || delta > MaxPcrDelta)
+                if (delta > 0 && delta <= MaxPcrDelta)
                 {
-                    continue;
-                }
-
-                mediaElapsedSeconds += delta / 90000.0;
-
-                TimeSpan ahead = TimeSpan.FromSeconds(mediaElapsedSeconds) - clock.Elapsed - PacingLead;
-                if (ahead > TimeSpan.Zero)
-                {
-                    await output.WriteAsync(buf.AsMemory(start, i - start), cancellationToken).ConfigureAwait(false);
-                    start = i;
-                    await Task.Delay(ahead, cancellationToken).ConfigureAwait(false);
+                    mediaElapsedSeconds += delta / 90000.0;
                 }
             }
 
             await output.WriteAsync(buf.AsMemory(start, end - start), cancellationToken).ConfigureAwait(false);
+            bytesDelivered += end - start;
 
             leftover = available - end;
             if (leftover > 0)
             {
                 Array.Copy(buf, end, buf, 0, leftover);
+            }
+
+            // Pace: sleep if we are ahead by the media clock (PCR, exact 1x) OR by the byte ceiling
+            // (anti-race fallback). Whichever says we are further ahead wins.
+            double elapsed = clock.Elapsed.TotalSeconds;
+            double pcrAhead = mediaElapsedSeconds > 0
+                ? mediaElapsedSeconds - elapsed - leadSeconds
+                : double.NegativeInfinity;
+            double byteAhead = (bytesDelivered / targetBytesPerSecond) - elapsed - leadSeconds;
+            double ahead = Math.Max(pcrAhead, byteAhead);
+            if (ahead > 0)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(ahead), cancellationToken).ConfigureAwait(false);
             }
         }
     }
