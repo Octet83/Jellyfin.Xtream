@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -39,6 +40,12 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// </summary>
     public const string TunerHost = "Xtream-Restream";
 
+    /// <summary>The size of a single MPEG-TS packet.</summary>
+    private const int TsPacketSize = 188;
+
+    /// <summary>How far the media clock may run ahead of wall-clock before pacing kicks in (start-up buffer).</summary>
+    private static readonly TimeSpan PacingLead = TimeSpan.FromSeconds(5);
+
     private static readonly HttpStatusCode[] _redirects = [
         HttpStatusCode.Moved,
         HttpStatusCode.MovedPermanently,
@@ -52,6 +59,7 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     private readonly CancellationTokenSource _tokenSource;
     private readonly string _url;
     private readonly Func<string>? _urlProvider;
+    private readonly bool _pace;
 
     private Task? _copyTask;
     private Stream? _inputStream;
@@ -69,11 +77,17 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// <c>start</c> to "now", which — the offset being constant — resumes seamlessly. When null the
     /// original <see cref="MediaSourceInfo.Path"/> is reused on every reconnect.
     /// </param>
-    public Restream(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger logger, MediaSourceInfo mediaSource, Func<string>? urlProvider = null)
+    /// <param name="pace">
+    /// When true, the upstream is throttled to ~1x real time using the MPEG-TS PCR clock. Required for
+    /// catch-up/timeshift feeds, which the provider delivers as a fast download rather than a paced live
+    /// stream — without pacing the consumer races to the end and the stream stops after a few seconds.
+    /// </param>
+    public Restream(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger logger, MediaSourceInfo mediaSource, Func<string>? urlProvider = null, bool pace = false)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
         _urlProvider = urlProvider;
+        _pace = pace;
         MediaSource = mediaSource;
 
         _buffer = new WrappedBufferStream(16 * 1024 * 1024); // 16MiB
@@ -151,12 +165,161 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
 
         Stream input = await response.Content.ReadAsStreamAsync(CancellationToken.None).ConfigureAwait(false);
         _inputStream = input;
-        _copyTask = input.CopyToAsync(_buffer, _tokenSource.Token)
-            .ContinueWith(
+        Task pump = _pace
+            ? PaceCopyAsync(input, _buffer, _tokenSource.Token)
+            : input.CopyToAsync(_buffer, _tokenSource.Token);
+        _copyTask = pump.ContinueWith(
                 OnUpstreamEnded,
                 CancellationToken.None,
                 TaskContinuationOptions.None,
                 TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Copies an MPEG-TS upstream into the buffer paced to ~1x real time using the stream's PCR clock.
+    /// Catch-up/timeshift feeds are delivered as a fast download (many times real time); without pacing
+    /// the consumer (FFmpeg) races to the end and the "live" stream stops after seconds, and the ring
+    /// buffer overruns ("Reader cannot keep up"). Pacing the writer makes the blocking reader follow at 1x.
+    /// </summary>
+    /// <param name="input">The upstream content stream.</param>
+    /// <param name="output">The shared restream buffer.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    private async Task PaceCopyAsync(Stream input, Stream output, CancellationToken cancellationToken)
+    {
+        byte[] buf = new byte[TsPacketSize * 512]; // ~94 KiB, whole TS packets
+        int leftover = 0;
+        bool aligned = false;
+        long firstPcr = -1;
+        Stopwatch clock = new Stopwatch();
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            int read = await input.ReadAsync(buf.AsMemory(leftover, buf.Length - leftover), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break; // upstream EOF
+            }
+
+            int available = leftover + read;
+            int start = 0;
+
+            // Align to the first TS sync byte once (real streams start aligned, so this is usually a no-op).
+            if (!aligned)
+            {
+                int sync = FindSync(buf, available);
+                if (sync < 0)
+                {
+                    leftover = Math.Min(available, TsPacketSize * 2);
+                    Array.Copy(buf, available - leftover, buf, 0, leftover);
+                    continue;
+                }
+
+                start = sync;
+                aligned = true;
+            }
+
+            int packets = (available - start) / TsPacketSize;
+            int end = start + (packets * TsPacketSize);
+
+            // Walk the packets; whenever the media clock (PCR) gets more than PacingLead ahead of
+            // wall-clock, flush what we have and sleep so the consumer reads at real time.
+            for (int i = start; i < end; i += TsPacketSize)
+            {
+                long pcr = TryReadPcr(buf, i);
+                if (pcr < 0)
+                {
+                    continue;
+                }
+
+                if (firstPcr < 0)
+                {
+                    firstPcr = pcr;
+                    clock.Restart();
+                    continue;
+                }
+
+                double mediaSeconds = (pcr - firstPcr) / 90000.0;
+
+                // Re-base the clock on a discontinuity: a backward jump (PCR wrap / splice) or an
+                // implausibly large forward jump (a program-boundary PTS reset), which would otherwise
+                // make us sleep for minutes and freeze the picture.
+                if (mediaSeconds < 0 || mediaSeconds - clock.Elapsed.TotalSeconds > 30)
+                {
+                    firstPcr = pcr;
+                    clock.Restart();
+                    continue;
+                }
+
+                TimeSpan ahead = TimeSpan.FromSeconds(mediaSeconds) - clock.Elapsed - PacingLead;
+                if (ahead > TimeSpan.Zero)
+                {
+                    await output.WriteAsync(buf.AsMemory(start, i - start), cancellationToken).ConfigureAwait(false);
+                    start = i;
+                    await Task.Delay(ahead, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            await output.WriteAsync(buf.AsMemory(start, end - start), cancellationToken).ConfigureAwait(false);
+
+            leftover = available - end;
+            if (leftover > 0)
+            {
+                Array.Copy(buf, end, buf, 0, leftover);
+            }
+        }
+    }
+
+    /// <summary>Finds the offset of the first TS packet boundary (three sync bytes 188 apart).</summary>
+    /// <param name="b">The buffer.</param>
+    /// <param name="length">The number of valid bytes in the buffer.</param>
+    /// <returns>The sync offset, or -1 when none is found yet.</returns>
+    private static int FindSync(byte[] b, int length)
+    {
+        for (int i = 0; i + (TsPacketSize * 2) < length; i++)
+        {
+            if (b[i] == 0x47 && b[i + TsPacketSize] == 0x47 && b[i + (TsPacketSize * 2)] == 0x47)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>Reads the 90 kHz PCR base from a TS packet at the given offset, or -1 when absent.</summary>
+    /// <param name="b">The buffer.</param>
+    /// <param name="o">The packet offset.</param>
+    /// <returns>The PCR base in 90 kHz units, or -1.</returns>
+    private static long TryReadPcr(byte[] b, int o)
+    {
+        if (b[o] != 0x47)
+        {
+            return -1; // not aligned on a sync byte
+        }
+
+        int adaptationFieldControl = (b[o + 3] >> 4) & 0x3;
+        if (adaptationFieldControl != 2 && adaptationFieldControl != 3)
+        {
+            return -1; // no adaptation field
+        }
+
+        int adaptationFieldLength = b[o + 4];
+        if (adaptationFieldLength == 0)
+        {
+            return -1;
+        }
+
+        int flags = b[o + 5];
+        if ((flags & 0x10) == 0)
+        {
+            return -1; // PCR flag not set
+        }
+
+        return ((long)b[o + 6] << 25)
+            | ((long)b[o + 7] << 17)
+            | ((long)b[o + 8] << 9)
+            | ((long)b[o + 9] << 1)
+            | ((long)(b[o + 10] >> 7) & 0x1);
     }
 
     /// <summary>
@@ -178,8 +341,9 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
 
         _inputStream = null;
 
-        // The consumer left, or this is a finite (VOD/series) stream: let it end.
-        if (_tokenSource.IsCancellationRequested || !MediaSource.IsInfiniteStream)
+        // Let the stream end when it was deliberately closed, when it is finite (VOD/series), or when
+        // nobody is watching any more — the last guard stops an abandoned stream from looping forever.
+        if (_tokenSource.IsCancellationRequested || !MediaSource.IsInfiniteStream || ConsumerCount <= 0)
         {
             return;
         }
@@ -195,15 +359,15 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     {
         try
         {
-            // Small backoff so an upstream that EOFs instantly can't spin a tight loop.
-            await Task.Delay(TimeSpan.FromMilliseconds(500), _tokenSource.Token).ConfigureAwait(false);
+            // Backoff so an upstream that EOFs instantly can't spin a tight loop.
+            await Task.Delay(TimeSpan.FromSeconds(2), _tokenSource.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             return;
         }
 
-        if (_tokenSource.IsCancellationRequested)
+        if (_tokenSource.IsCancellationRequested || ConsumerCount <= 0)
         {
             return;
         }

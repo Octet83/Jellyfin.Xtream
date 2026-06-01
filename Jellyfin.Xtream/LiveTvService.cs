@@ -333,7 +333,9 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
 
         if (stream == null)
         {
-            stream = new Restream(appHost, httpClientFactory, logger, mediaSourceInfo, urlProvider);
+            // Catch-up feeds are delivered as a fast download, so they must be paced to ~1x; the real
+            // live feed is already paced by the provider and is restreamed as-is.
+            stream = new Restream(appHost, httpClientFactory, logger, mediaSourceInfo, urlProvider, pace: useCaledonianShift);
             await stream.Open(cancellationToken).ConfigureAwait(false);
         }
 
