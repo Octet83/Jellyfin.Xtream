@@ -43,6 +43,39 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// <summary>The size of a single MPEG-TS packet.</summary>
     private const int TsPacketSize = 188;
 
+    /// <summary>The 33-bit MPEG-TS PCR base wraps at this modulus (~26.5 h @ 90 kHz).</summary>
+    private const long PcrModulus = 1L << 33;
+
+    /// <summary>
+    /// A backward PCR step larger than this is a genuine source discontinuity, not reconnect
+    /// overlap — the minute-truncated timeshift restart can only overlap by ≤60 s (+ lead/backoff).
+    /// </summary>
+    private const long DiscontinuityGuardPcrTicks = 10L * 60 * 90000; // 10 min @ 90 kHz
+
+    /// <summary>
+    /// Release the overlap trim if no PCR at all was seen within this many trimmed bytes: a real TS
+    /// carries a PCR at least every 100 ms, so a PCR-less feed is identified almost immediately and
+    /// passed through untrimmed (there is nothing to gate on).
+    /// </summary>
+    private const long TrimNoPcrProbeBytes = 2L * 1024 * 1024;
+
+    /// <summary>
+    /// Give up trimming once the trimmed span itself covers more than this much PCR time — the
+    /// plausible reconnect overlap is ≤~67 s, so a longer span means the overlap model is wrong and
+    /// passing data through beats eating live content. Time-based on purpose: a byte cap is wrong
+    /// for high-bitrate channels (60 s of 12 Mbps is ~90 MB).
+    /// </summary>
+    private const long TrimWindowPcrTicks = 90L * 90000; // 90 s @ 90 kHz
+
+    /// <summary>A reconnect that delivered (post-trim) less than this re-served only old content — it was barren.</summary>
+    private const long BarrenThresholdBytes = TsPacketSize * 1000L; // ~188 KB ≈ 0.2 s
+
+    /// <summary>Cap on the forward skip escalation applied after consecutive barren reconnects.</summary>
+    private const int MaxBarrenSkipMinutes = 5;
+
+    /// <summary>Cap on the accumulated skip baseline, bounding total drift from the Caledonian alignment per session.</summary>
+    private static readonly TimeSpan MaxSkipBaseline = TimeSpan.FromMinutes(15);
+
     /// <summary>How far the media clock may run ahead of wall-clock before pacing kicks in (start-up buffer).</summary>
     private static readonly TimeSpan PacingLead = TimeSpan.FromSeconds(5);
 
@@ -58,11 +91,27 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     private readonly ILogger _logger;
     private readonly CancellationTokenSource _tokenSource;
     private readonly string _url;
-    private readonly Func<string>? _urlProvider;
+    private readonly Func<TimeSpan, string>? _urlProvider;
     private readonly bool _pace;
 
     private Task? _copyTask;
     private Stream? _inputStream;
+
+    // Reconnect-overlap state. The timeshift restart is minute-granular, so every reconnect can
+    // re-serve up to ~60 s of content already written to the buffer; written again, it reaches the
+    // demuxer as a timestamp rewind that freezes video and replays audio. We track the last PCR
+    // actually delivered and trim reconnected input until it passes that point; reconnects that
+    // deliver nothing new (stuck on the same provider chunk) escalate a forward skip instead of
+    // looping forever on a frozen playlist, and a skip that finally delivers is folded into
+    // _skipBaseline so later reconnects don't re-request (and re-trim) the skipped span.
+    private long _lastDeliveredPcr = -1;
+    private bool _trimOverlap;
+    private long _trimmedBytes;
+    private long _trimFirstPcr = -1;
+    private bool _trimSawPcr;
+    private int _barrenReconnects;
+    private TimeSpan _skipBaseline = TimeSpan.Zero;
+    private long _deliveredThisConnection;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Restream"/> class.
@@ -74,15 +123,18 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// <param name="urlProvider">
     /// Optional factory returning a fresh upstream URL whenever the restream reconnects after an
     /// upstream EOF (live/catch-up only). For time-shifted catch-up channels this re-aligns the
-    /// <c>start</c> to "now", which — the offset being constant — resumes seamlessly. When null the
-    /// original <see cref="MediaSourceInfo.Path"/> is reused on every reconnect.
+    /// <c>start</c> to "now", which — the offset being constant — resumes seamlessly. The
+    /// <see cref="TimeSpan"/> argument is a forward skip to add to that start: it stays zero in
+    /// normal operation and grows by a minute per barren reconnect (a restart that re-served only
+    /// already-delivered content), so a dead provider chunk is skipped instead of looped on. When
+    /// null the original <see cref="MediaSourceInfo.Path"/> is reused on every reconnect.
     /// </param>
     /// <param name="pace">
     /// When true, the upstream is throttled to ~1x real time using the MPEG-TS PCR clock. Required for
     /// catch-up/timeshift feeds, which the provider delivers as a fast download rather than a paced live
     /// stream — without pacing the consumer races to the end and the stream stops after a few seconds.
     /// </param>
-    public Restream(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger logger, MediaSourceInfo mediaSource, Func<string>? urlProvider = null, bool pace = false)
+    public Restream(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger logger, MediaSourceInfo mediaSource, Func<TimeSpan, string>? urlProvider = null, bool pace = false)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
@@ -146,7 +198,11 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     private async Task ConnectAndPumpAsync(CancellationToken cancellationToken)
     {
         string channelId = MediaSource.Id;
-        string url = _urlProvider?.Invoke() ?? _url;
+        _deliveredThisConnection = 0;
+        _trimmedBytes = 0;
+        _trimFirstPcr = -1;
+        _trimSawPcr = false;
+        string url = _urlProvider?.Invoke(_skipBaseline + TimeSpan.FromMinutes(_barrenReconnects)) ?? _url;
 
         // Response stream is disposed manually.
         HttpResponseMessage response = await _httpClientFactory.CreateClient(NamedClient.Default)
@@ -234,8 +290,55 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
             int packets = (available - start) / TsPacketSize;
             int end = start + (packets * TsPacketSize);
 
-            // Accumulate clean PCR deltas (no sleeping here; pacing is applied per chunk below).
-            for (int i = start; i < end; i += TsPacketSize)
+            // Post-reconnect overlap trim: drop packets until the PCR passes the last delivered one,
+            // so the re-served span never reaches the demuxer as a timestamp rewind. All comparisons
+            // are modular in 33-bit PCR space so a wrap mid-overlap doesn't defeat the gate. Escape
+            // hatches: a backward step too large to be overlap is a genuine source discontinuity
+            // (pass through); a trimmed span longer than any plausible overlap means the model is
+            // wrong (pass through); a feed with no PCR at all cannot be gated (pass through).
+            int writeFrom = start;
+            if (_trimOverlap)
+            {
+                writeFrom = end;
+                for (int i = start; i < end; i += TsPacketSize)
+                {
+                    long pcr = TryReadPcr(buf, i);
+                    bool release = false;
+                    if (pcr >= 0)
+                    {
+                        _trimSawPcr = true;
+                        if (_trimFirstPcr < 0)
+                        {
+                            _trimFirstPcr = pcr;
+                        }
+
+                        long aheadOfDelivered = PcrDistance(_lastDeliveredPcr, pcr);
+                        release = aheadOfDelivered > 0 || -aheadOfDelivered > DiscontinuityGuardPcrTicks
+                            || PcrDistance(_trimFirstPcr, pcr) > TrimWindowPcrTicks;
+                    }
+                    else if (!_trimSawPcr && _trimmedBytes + (i - start) >= TrimNoPcrProbeBytes)
+                    {
+                        release = true;
+                    }
+
+                    if (release)
+                    {
+                        writeFrom = i;
+                        _trimOverlap = false;
+                        _logger.LogInformation(
+                            "Restream for channel {ChannelId} trimmed {Bytes} bytes of reconnect overlap.",
+                            MediaSource.Id,
+                            _trimmedBytes + (i - start));
+                        break;
+                    }
+                }
+
+                _trimmedBytes += (_trimOverlap ? end : writeFrom) - start;
+            }
+
+            // Accumulate clean PCR deltas over the delivered span (no sleeping here; pacing is applied
+            // per chunk below). Also remember the last delivered PCR for reconnect-overlap trimming.
+            for (int i = writeFrom; i < end; i += TsPacketSize)
             {
                 long pcr = TryReadPcr(buf, i);
                 if (pcr < 0)
@@ -243,22 +346,25 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                     continue;
                 }
 
-                if (lastPcr < 0)
+                if (lastPcr >= 0)
                 {
-                    lastPcr = pcr;
-                    continue;
+                    long delta = pcr - lastPcr;
+                    if (delta > 0 && delta <= MaxPcrDelta)
+                    {
+                        mediaElapsedSeconds += delta / 90000.0;
+                    }
                 }
 
-                long delta = pcr - lastPcr;
                 lastPcr = pcr;
-                if (delta > 0 && delta <= MaxPcrDelta)
-                {
-                    mediaElapsedSeconds += delta / 90000.0;
-                }
+                _lastDeliveredPcr = pcr;
             }
 
-            await output.WriteAsync(buf.AsMemory(start, end - start), cancellationToken).ConfigureAwait(false);
-            bytesDelivered += end - start;
+            if (end > writeFrom)
+            {
+                await output.WriteAsync(buf.AsMemory(writeFrom, end - writeFrom), cancellationToken).ConfigureAwait(false);
+                bytesDelivered += end - writeFrom;
+                _deliveredThisConnection += end - writeFrom;
+            }
 
             leftover = available - end;
             if (leftover > 0)
@@ -279,6 +385,24 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                 await Task.Delay(TimeSpan.FromSeconds(ahead), cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>
+    /// Signed shortest distance from one PCR to another in modular 33-bit PCR space: positive when
+    /// <paramref name="to"/> is ahead of <paramref name="from"/>, correct across the PCR wrap.
+    /// </summary>
+    /// <param name="from">The reference PCR (90 kHz units).</param>
+    /// <param name="to">The PCR to compare (90 kHz units).</param>
+    /// <returns>The signed distance in 90 kHz units.</returns>
+    private static long PcrDistance(long from, long to)
+    {
+        long diff = (to - from) & (PcrModulus - 1);
+        if (diff > PcrModulus >> 1)
+        {
+            diff -= PcrModulus;
+        }
+
+        return diff;
     }
 
     /// <summary>Finds the offset of the first TS packet boundary (three sync bytes 188 apart).</summary>
@@ -309,6 +433,11 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
             return -1; // not aligned on a sync byte
         }
 
+        if ((b[o + 1] & 0x80) != 0)
+        {
+            return -1; // transport_error_indicator set — don't trust anything in this packet
+        }
+
         int adaptationFieldControl = (b[o + 3] >> 4) & 0x3;
         if (adaptationFieldControl != 2 && adaptationFieldControl != 3)
         {
@@ -316,9 +445,9 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         }
 
         int adaptationFieldLength = b[o + 4];
-        if (adaptationFieldLength == 0)
+        if (adaptationFieldLength < 7)
         {
-            return -1;
+            return -1; // a PCR needs the flags byte + 6 PCR bytes
         }
 
         int flags = b[o + 5];
@@ -360,6 +489,41 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
             return;
         }
 
+        // Barren-reconnect escalation (paced/timeshift only): a connection that cleanly EOF'd having
+        // trimmed plenty but delivered essentially nothing re-served only already-delivered content —
+        // the minute-truncated restart is stuck at/behind a provider chunk boundary. Each barren round
+        // widens the forward skip, so we lose up to a minute of content instead of freezing the
+        // playlist forever. Transport failures (fault, empty body) are NOT barren: they retry at the
+        // same start and the overlap trim absorbs whatever the next healthy connection re-serves.
+        if (_pace)
+        {
+            bool cleanEof = task.Status == TaskStatus.RanToCompletion;
+            bool reservedOldContent = _trimmedBytes >= BarrenThresholdBytes;
+            if (cleanEof && reservedOldContent && _deliveredThisConnection < BarrenThresholdBytes)
+            {
+                _barrenReconnects = Math.Min(_barrenReconnects + 1, MaxBarrenSkipMinutes);
+                _logger.LogWarning(
+                    "Restream for channel {ChannelId} reconnect was barren ({Bytes} bytes delivered); next start skips +{Minutes} min.",
+                    MediaSource.Id,
+                    _deliveredThisConnection,
+                    _barrenReconnects);
+            }
+            else if (_deliveredThisConnection >= BarrenThresholdBytes && _barrenReconnects > 0)
+            {
+                // The escalated start finally delivered: the content timeline now runs the skipped
+                // span ahead of the wall-aligned start, permanently. Fold the skip into the baseline
+                // so later reconnects don't re-request — and have to re-trim — the skipped minutes
+                // on every reconnect for the rest of the session.
+                TimeSpan folded = _skipBaseline + TimeSpan.FromMinutes(_barrenReconnects);
+                _skipBaseline = folded < MaxSkipBaseline ? folded : MaxSkipBaseline;
+                _barrenReconnects = 0;
+                _logger.LogInformation(
+                    "Restream for channel {ChannelId} folded barren skip into baseline; reconnect starts now offset by {Baseline}.",
+                    MediaSource.Id,
+                    _skipBaseline);
+            }
+        }
+
         _ = ReconnectAsync();
     }
 
@@ -387,6 +551,11 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         try
         {
             _logger.LogInformation("Reconnecting restream upstream for channel {ChannelId}.", MediaSource.Id);
+
+            // Arm the overlap trim for the reconnected input (only once something was delivered;
+            // there is nothing to overlap with on a virgin buffer). The per-connection trim state
+            // resets in ConnectAndPumpAsync.
+            _trimOverlap = _pace && _lastDeliveredPcr >= 0;
             await ConnectAndPumpAsync(_tokenSource.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)

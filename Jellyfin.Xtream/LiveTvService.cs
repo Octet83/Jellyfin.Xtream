@@ -308,7 +308,7 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
         }
 
         MediaSourceInfo mediaSourceInfo;
-        Func<string>? urlProvider = null;
+        Func<TimeSpan, string>? urlProvider = null;
         if (useCaledonianShift)
         {
             // Serve the channel time-shifted so that the provider's broadcast aligns with the target (Caledonian) wall-clock.
@@ -319,10 +319,26 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
             mediaSourceInfo = plugin.StreamService.GetMediaSourceInfo(StreamType.CatchupLive, channel, start: GetCaledonianAlignedStart(providerTz), durationMinutes: durationMinutes, restream: true);
 
             // When the upstream catch-up connection drops, reconnect with the start re-aligned to "now".
-            // The Caledonian offset is constant, so the new start matches where the stream was — seamless.
-            urlProvider = () => plugin.StreamService
-                .GetMediaSourceInfo(StreamType.CatchupLive, channel, start: GetCaledonianAlignedStart(providerTz), durationMinutes: durationMinutes, restream: true)
-                .Path;
+            // The Caledonian offset is constant, so the new start matches where the stream was; the
+            // Restream trims the sub-minute overlap the minute-truncated start re-serves. skipAhead
+            // is zero in normal operation and grows by a minute per barren reconnect (provider stuck
+            // re-serving the same chunk), so playback skips a dead span instead of freezing. The start
+            // is clamped below the provider's "now": a skip can never push the timeshift request into
+            // the future, which providers reject or serve garbage for.
+            urlProvider = skipAhead =>
+            {
+                DateTime start = GetCaledonianAlignedStart(providerTz) + skipAhead;
+                DateTime providerNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, providerTz);
+                DateTime latestSafeStart = providerNow - TimeSpan.FromMinutes(1);
+                if (start > latestSafeStart)
+                {
+                    start = latestSafeStart;
+                }
+
+                return plugin.StreamService
+                    .GetMediaSourceInfo(StreamType.CatchupLive, channel, start: start, durationMinutes: durationMinutes, restream: true)
+                    .Path;
+            };
         }
         else
         {

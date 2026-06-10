@@ -24,6 +24,15 @@ namespace Jellyfin.Xtream.Service;
 /// </summary>
 public class WrappedBufferReadStream : Stream
 {
+    /// <summary>
+    /// How far behind the live edge a (re)attaching consumer starts, in bytes. Must be small:
+    /// FFmpeg re-GETs this stream mid-session (HTTP reconnect), and every byte of history handed
+    /// back to that same demuxer input is a timestamp rewind it muxes as a freeze/desync burst.
+    /// 2 MiB ≈ 2 s at 8 Mbps — enough trailing data to find PAT/PMT and a keyframe quickly,
+    /// without replaying a 16 MiB (~17 s) backlog like the previous BufferSize/2 policy did.
+    /// </summary>
+    private const long PrerollBytes = 2 * 1024 * 1024;
+
     private readonly WrappedBufferStream _sourceBuffer;
 
     private readonly long _initialReadHead;
@@ -35,7 +44,7 @@ public class WrappedBufferReadStream : Stream
     public WrappedBufferReadStream(WrappedBufferStream sourceBuffer)
     {
         _sourceBuffer = sourceBuffer;
-        _initialReadHead = Math.Max(0, sourceBuffer.TotalBytesWritten - (sourceBuffer.BufferSize / 2));
+        _initialReadHead = Math.Max(0, sourceBuffer.TotalBytesWritten - PrerollBytes);
         ReadHead = _initialReadHead;
     }
 
@@ -86,8 +95,9 @@ public class WrappedBufferReadStream : Stream
             // The reader fell more than a full buffer behind — typically a transient FFmpeg stall on a
             // stream discontinuity in the source. The overtaken bytes are already gone, so rather than
             // killing the whole stream (which froze playback), skip forward to recent data and carry on.
-            // The consumer sees a jump instead of a hard failure.
-            ReadHead = _sourceBuffer.TotalBytesWritten - (_sourceBuffer.BufferSize / 2);
+            // The consumer sees a jump instead of a hard failure. Resume close to the live edge: every
+            // byte of stale history re-read here reaches the demuxer as a timestamp rewind.
+            ReadHead = _sourceBuffer.TotalBytesWritten - PrerollBytes;
             gap = _sourceBuffer.TotalBytesWritten - ReadHead;
         }
 
