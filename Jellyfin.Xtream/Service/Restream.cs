@@ -99,16 +99,21 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
 
     // Reconnect-overlap state. The timeshift restart is minute-granular, so every reconnect can
     // re-serve up to ~60 s of content already written to the buffer; written again, it reaches the
-    // demuxer as a timestamp rewind that freezes video and replays audio. We track the last PCR
-    // actually delivered and trim reconnected input until it passes that point; reconnects that
-    // deliver nothing new (stuck on the same provider chunk) escalate a forward skip instead of
-    // looping forever on a frozen playlist, and a skip that finally delivers is folded into
+    // demuxer as a timestamp rewind that freezes video and replays audio. We track the last media
+    // clock actually delivered and trim reconnected input until it passes that point; reconnects
+    // that deliver nothing new (stuck on the same provider chunk) escalate a forward skip instead
+    // of looping forever on a frozen playlist, and a skip that finally delivers is folded into
     // _skipBaseline so later reconnects don't re-request (and re-trim) the skipped span.
-    private long _lastDeliveredPcr = -1;
+    //
+    // The clock is the video PES DTS (PTS fallback), NOT the PCR: these provider feeds carry no
+    // usable PCR (the PCR pacing path already falls back to the byte ceiling for the same reason),
+    // and a PCR-gated trim simply never arms. Video PES headers exist on every frame and the DTS
+    // is monotone per stream, which is exactly what the gate needs. Same 90 kHz units as PCR.
+    private long _lastDeliveredClock = -1;
     private bool _trimOverlap;
     private long _trimmedBytes;
-    private long _trimFirstPcr = -1;
-    private bool _trimSawPcr;
+    private long _trimFirstClock = -1;
+    private bool _trimSawClock;
     private int _barrenReconnects;
     private TimeSpan _skipBaseline = TimeSpan.Zero;
     private long _deliveredThisConnection;
@@ -200,8 +205,8 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         string channelId = MediaSource.Id;
         _deliveredThisConnection = 0;
         _trimmedBytes = 0;
-        _trimFirstPcr = -1;
-        _trimSawPcr = false;
+        _trimFirstClock = -1;
+        _trimSawClock = false;
         string url = _urlProvider?.Invoke(_skipBaseline + TimeSpan.FromMinutes(_barrenReconnects)) ?? _url;
 
         // Response stream is disposed manually.
@@ -302,21 +307,21 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                 writeFrom = end;
                 for (int i = start; i < end; i += TsPacketSize)
                 {
-                    long pcr = TryReadPcr(buf, i);
+                    long mediaClock = TryReadVideoClock(buf, i);
                     bool release = false;
-                    if (pcr >= 0)
+                    if (mediaClock >= 0)
                     {
-                        _trimSawPcr = true;
-                        if (_trimFirstPcr < 0)
+                        _trimSawClock = true;
+                        if (_trimFirstClock < 0)
                         {
-                            _trimFirstPcr = pcr;
+                            _trimFirstClock = mediaClock;
                         }
 
-                        long aheadOfDelivered = PcrDistance(_lastDeliveredPcr, pcr);
+                        long aheadOfDelivered = PcrDistance(_lastDeliveredClock, mediaClock);
                         release = aheadOfDelivered > 0 || -aheadOfDelivered > DiscontinuityGuardPcrTicks
-                            || PcrDistance(_trimFirstPcr, pcr) > TrimWindowPcrTicks;
+                            || PcrDistance(_trimFirstClock, mediaClock) > TrimWindowPcrTicks;
                     }
-                    else if (!_trimSawPcr && _trimmedBytes + (i - start) >= TrimNoPcrProbeBytes)
+                    else if (!_trimSawClock && _trimmedBytes + (i - start) >= TrimNoPcrProbeBytes)
                     {
                         release = true;
                     }
@@ -336,10 +341,17 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                 _trimmedBytes += (_trimOverlap ? end : writeFrom) - start;
             }
 
-            // Accumulate clean PCR deltas over the delivered span (no sleeping here; pacing is applied
-            // per chunk below). Also remember the last delivered PCR for reconnect-overlap trimming.
+            // Over the delivered span: accumulate clean PCR deltas for pacing (no sleeping here;
+            // pacing is applied per chunk below), and remember the last delivered video PES clock
+            // for reconnect-overlap trimming (these feeds often carry no usable PCR).
             for (int i = writeFrom; i < end; i += TsPacketSize)
             {
+                long deliveredClock = TryReadVideoClock(buf, i);
+                if (deliveredClock >= 0)
+                {
+                    _lastDeliveredClock = deliveredClock;
+                }
+
                 long pcr = TryReadPcr(buf, i);
                 if (pcr < 0)
                 {
@@ -356,7 +368,6 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                 }
 
                 lastPcr = pcr;
-                _lastDeliveredPcr = pcr;
             }
 
             if (end > writeFrom)
@@ -420,6 +431,77 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         }
 
         return -1;
+    }
+
+    /// <summary>
+    /// Reads the 90 kHz media clock from a video PES header starting in the TS packet at the given
+    /// offset: the DTS when present (monotone per stream — ideal gate clock), the PTS otherwise.
+    /// Returns -1 when the packet doesn't start a video PES with a timestamp. Used for the
+    /// reconnect-overlap trim because these provider feeds carry no usable PCR.
+    /// </summary>
+    /// <param name="b">The buffer.</param>
+    /// <param name="o">The packet offset.</param>
+    /// <returns>The DTS/PTS in 90 kHz units, or -1.</returns>
+    private static long TryReadVideoClock(byte[] b, int o)
+    {
+        if (b[o] != 0x47)
+        {
+            return -1; // not aligned on a sync byte
+        }
+
+        if ((b[o + 1] & 0x80) != 0)
+        {
+            return -1; // transport_error_indicator set
+        }
+
+        if ((b[o + 1] & 0x40) == 0)
+        {
+            return -1; // not a payload_unit_start packet — no PES header here
+        }
+
+        int adaptationFieldControl = (b[o + 3] >> 4) & 0x3;
+        if (adaptationFieldControl == 0 || adaptationFieldControl == 2)
+        {
+            return -1; // no payload
+        }
+
+        int payload = o + 4;
+        if (adaptationFieldControl == 3)
+        {
+            int adaptationFieldLength = b[o + 4];
+            payload += 1 + adaptationFieldLength;
+        }
+
+        // Full PES header with both timestamps needs up to 19 bytes.
+        if (payload + 19 > o + TsPacketSize)
+        {
+            return -1;
+        }
+
+        if (b[payload] != 0x00 || b[payload + 1] != 0x00 || b[payload + 2] != 0x01)
+        {
+            return -1; // no PES start code
+        }
+
+        int streamId = b[payload + 3];
+        if (streamId < 0xE0 || streamId > 0xEF)
+        {
+            return -1; // not a video elementary stream
+        }
+
+        int ptsDtsFlags = (b[payload + 7] >> 6) & 0x3;
+        if ((ptsDtsFlags & 0x2) == 0)
+        {
+            return -1; // no PTS
+        }
+
+        // PTS sits at +9; when the DTS is present it follows at +14 — prefer it (monotone).
+        int p = ptsDtsFlags == 0x3 ? payload + 14 : payload + 9;
+        return (((long)b[p] >> 1) & 0x7) << 30
+            | (long)b[p + 1] << 22
+            | (((long)b[p + 2] >> 1) & 0x7F) << 15
+            | (long)b[p + 3] << 7
+            | (((long)b[p + 4] >> 1) & 0x7F);
     }
 
     /// <summary>Reads the 90 kHz PCR base from a TS packet at the given offset, or -1 when absent.</summary>
@@ -554,8 +636,23 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
 
             // Arm the overlap trim for the reconnected input (only once something was delivered;
             // there is nothing to overlap with on a virgin buffer). The per-connection trim state
-            // resets in ConnectAndPumpAsync.
-            _trimOverlap = _pace && _lastDeliveredPcr >= 0;
+            // resets in ConnectAndPumpAsync. Logged so a trim that never arms is visible: that was
+            // exactly the 0.9.7.0 failure mode (gating on a PCR these feeds don't carry).
+            _trimOverlap = _pace && _lastDeliveredClock >= 0;
+            if (_pace && !_trimOverlap)
+            {
+                _logger.LogWarning(
+                    "Restream for channel {ChannelId} reconnecting WITHOUT overlap trim: no video clock seen yet.",
+                    MediaSource.Id);
+            }
+            else if (_trimOverlap)
+            {
+                _logger.LogInformation(
+                    "Restream for channel {ChannelId} arming overlap trim at clock {Clock}.",
+                    MediaSource.Id,
+                    _lastDeliveredClock);
+            }
+
             await ConnectAndPumpAsync(_tokenSource.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
