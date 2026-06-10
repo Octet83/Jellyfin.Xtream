@@ -73,6 +73,9 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// <summary>Cap on the forward skip escalation applied after consecutive barren reconnects.</summary>
     private const int MaxBarrenSkipMinutes = 5;
 
+    /// <summary>Give up TS alignment past this many sync-less bytes and degrade to a raw copy.</summary>
+    private const long RawPassthroughThresholdBytes = 1024 * 1024;
+
     /// <summary>Cap on the accumulated skip baseline, bounding total drift from the Caledonian alignment per session.</summary>
     private static readonly TimeSpan MaxSkipBaseline = TimeSpan.FromMinutes(15);
 
@@ -187,7 +190,11 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
             return;
         }
 
-        _logger.LogInformation("Starting restream for channel {ChannelId}.", MediaSource.Id);
+        // pace=true → catch-up/timeshift feed (throttled to 1x); pace=false → plain live. Logged
+        // because the provider's tv_archive flag flaps and silently flips channels between the two
+        // paths — without this line, "zero trim logs" is ambiguous between a broken trim and an
+        // unpaced channel (which cost us a full debugging round in 0.9.7.0/0.9.7.1).
+        _logger.LogInformation("Starting restream for channel {ChannelId} (pace={Pace}).", MediaSource.Id, _pace);
 
         // Await the first connection so the buffer starts filling before Open returns; later
         // upstream EOFs are handled in the background by ConnectAndPump's continuation.
@@ -226,9 +233,11 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
 
         Stream input = await response.Content.ReadAsStreamAsync(CancellationToken.None).ConfigureAwait(false);
         _inputStream = input;
-        Task pump = _pace
-            ? PaceCopyAsync(input, _buffer, _tokenSource.Token)
-            : input.CopyToAsync(_buffer, _tokenSource.Token);
+
+        // Both paced (catch-up) and plain live go through the same packet-scanning loop: field data
+        // showed the provider re-serves 12-29 s of backlog on PLAIN live reconnects too (every
+        // ~10-26 s), so the overlap trim must run on both paths. Pacing itself stays catch-up-only.
+        Task pump = CopyLoopAsync(input, _buffer, _tokenSource.Token);
         _copyTask = pump.ContinueWith(
                 OnUpstreamEnded,
                 CancellationToken.None,
@@ -237,15 +246,18 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     }
 
     /// <summary>
-    /// Copies an MPEG-TS upstream into the buffer paced to ~1x real time using the stream's PCR clock.
-    /// Catch-up/timeshift feeds are delivered as a fast download (many times real time); without pacing
-    /// the consumer (FFmpeg) races to the end and the "live" stream stops after seconds, and the ring
-    /// buffer overruns ("Reader cannot keep up"). Pacing the writer makes the blocking reader follow at 1x.
+    /// Copies the MPEG-TS upstream into the buffer, scanning packets for the trim/clock machinery on
+    /// every path, and — for catch-up/timeshift feeds only (<c>_pace</c>) — throttling to ~1x real
+    /// time using the stream's PCR clock. Catch-up feeds are delivered as a fast download; without
+    /// pacing the consumer (FFmpeg) races to the end and the "live" stream stops after seconds, and
+    /// the ring buffer overruns ("Reader cannot keep up"). Plain live feeds are already paced by the
+    /// provider, but still need the packet scan: their reconnects re-serve backlog that must be
+    /// trimmed. A stream that turns out not to be MPEG-TS falls back to raw passthrough.
     /// </summary>
     /// <param name="input">The upstream content stream.</param>
     /// <param name="output">The shared restream buffer.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    private async Task PaceCopyAsync(Stream input, Stream output, CancellationToken cancellationToken)
+    private async Task CopyLoopAsync(Stream input, Stream output, CancellationToken cancellationToken)
     {
         // Anti-race ceiling: never deliver faster than ~1.25x the declared bitrate. This alone keeps the
         // stream from racing even when the PCR clock is unusable (some catch-up feeds have no/garbled PCR),
@@ -257,6 +269,8 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         byte[] buf = new byte[TsPacketSize * 512]; // ~94 KiB, whole TS packets
         int leftover = 0;
         bool aligned = false;
+        bool rawPassthrough = false;
+        long unalignedScanned = 0;
 
         // Fine 1x pacing from the PCR clock when present: accumulate only "clean" PCR deltas (catch-up
         // streams splice timelines, so a backward/huge jump is ignored rather than re-based in a loop).
@@ -275,6 +289,19 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
             }
 
             int available = leftover + read;
+
+            // Parachute for a stream that is not MPEG-TS at all: without it the aligner below would
+            // stash-and-rescan forever and never write a byte. Restream inputs are TS in practice,
+            // so this only exists to degrade into a dumb copy instead of a silent stall.
+            if (rawPassthrough)
+            {
+                await output.WriteAsync(buf.AsMemory(0, available), cancellationToken).ConfigureAwait(false);
+                bytesDelivered += available;
+                _deliveredThisConnection += available;
+                leftover = 0;
+                continue;
+            }
+
             int start = 0;
 
             // Align to the first TS sync byte once (real streams start aligned, so this is usually a no-op).
@@ -283,6 +310,22 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                 int sync = FindSync(buf, available);
                 if (sync < 0)
                 {
+                    unalignedScanned += available;
+                    if (unalignedScanned > RawPassthroughThresholdBytes)
+                    {
+                        _logger.LogWarning(
+                            "Restream for channel {ChannelId} found no TS sync in {Bytes} bytes; falling back to raw passthrough (no trim/pacing).",
+                            MediaSource.Id,
+                            unalignedScanned);
+                        rawPassthrough = true;
+                        _trimOverlap = false;
+                        await output.WriteAsync(buf.AsMemory(0, available), cancellationToken).ConfigureAwait(false);
+                        bytesDelivered += available;
+                        _deliveredThisConnection += available;
+                        leftover = 0;
+                        continue;
+                    }
+
                     leftover = Math.Min(available, TsPacketSize * 2);
                     Array.Copy(buf, available - leftover, buf, 0, leftover);
                     continue;
@@ -383,17 +426,21 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                 Array.Copy(buf, end, buf, 0, leftover);
             }
 
-            // Pace: sleep if we are ahead by the media clock (PCR, exact 1x) OR by the byte ceiling
-            // (anti-race fallback). Whichever says we are further ahead wins.
-            double elapsed = clock.Elapsed.TotalSeconds;
-            double pcrAhead = mediaElapsedSeconds > 0
-                ? mediaElapsedSeconds - elapsed - leadSeconds
-                : double.NegativeInfinity;
-            double byteAhead = (bytesDelivered / targetBytesPerSecond) - elapsed - leadSeconds;
-            double ahead = Math.Max(pcrAhead, byteAhead);
-            if (ahead > 0)
+            // Pace (catch-up/timeshift only): sleep if we are ahead by the media clock (PCR, exact 1x)
+            // OR by the byte ceiling (anti-race fallback). Whichever says we are further ahead wins.
+            // Plain live feeds are paced by the provider; throttling them would starve the consumer.
+            if (_pace)
             {
-                await Task.Delay(TimeSpan.FromSeconds(ahead), cancellationToken).ConfigureAwait(false);
+                double elapsed = clock.Elapsed.TotalSeconds;
+                double pcrAhead = mediaElapsedSeconds > 0
+                    ? mediaElapsedSeconds - elapsed - leadSeconds
+                    : double.NegativeInfinity;
+                double byteAhead = (bytesDelivered / targetBytesPerSecond) - elapsed - leadSeconds;
+                double ahead = Math.Max(pcrAhead, byteAhead);
+                if (ahead > 0)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(ahead), cancellationToken).ConfigureAwait(false);
+                }
             }
         }
     }
@@ -635,17 +682,18 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
             _logger.LogInformation("Reconnecting restream upstream for channel {ChannelId}.", MediaSource.Id);
 
             // Arm the overlap trim for the reconnected input (only once something was delivered;
-            // there is nothing to overlap with on a virgin buffer). The per-connection trim state
-            // resets in ConnectAndPumpAsync. Logged so a trim that never arms is visible: that was
-            // exactly the 0.9.7.0 failure mode (gating on a PCR these feeds don't carry).
-            _trimOverlap = _pace && _lastDeliveredClock >= 0;
-            if (_pace && !_trimOverlap)
+            // there is nothing to overlap with on a virgin buffer). NOT gated on _pace: plain live
+            // reconnects re-serve provider backlog too (12-29 s measured in the field). The
+            // per-connection trim state resets in ConnectAndPumpAsync. Logged so a trim that never
+            // arms is visible — silent non-engagement was the 0.9.7.0/0.9.7.1 failure mode.
+            _trimOverlap = _lastDeliveredClock >= 0;
+            if (!_trimOverlap)
             {
                 _logger.LogWarning(
                     "Restream for channel {ChannelId} reconnecting WITHOUT overlap trim: no video clock seen yet.",
                     MediaSource.Id);
             }
-            else if (_trimOverlap)
+            else
             {
                 _logger.LogInformation(
                     "Restream for channel {ChannelId} arming overlap trim at clock {Clock}.",
