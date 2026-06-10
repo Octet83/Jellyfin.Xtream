@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Le trim d'overlap tourne désormais aussi sur le live « simple »\n\nLa validation de la 0.9.7.1 a révélé le vrai verrou : le flag `tv_archive` du provider a **flappé à 0** sur les chaînes testées → elles passent par le chemin live **non pacé** (`CopyToAsync` brut)… où tout le mécanisme de trim n'existait pas. Et surtout, les sondes ont prouvé que les reconnexions du live simple **re-servent elles aussi 12-29 s de backlog** toutes les ~10-26 s — les blobs de replay n'ont jamais eu besoin du chemin timeshift.\n\n- La boucle de copie est **unifiée** : scan TS + horloge PES vidéo + trim d'overlap sur **les deux chemins** ; le pacing 1× (PCR + plafond octets) reste réservé au catch-up — le live simple n'est jamais throttlé.\n- L'armement du trim ne dépend plus du mode pacé.\n- L'ouverture d'un restream logge désormais `pace=true/false` — un flap du flag provider est visible dans le log au lieu de se déguiser en trim cassé.\n- Un flux non-TS dégrade en copie brute après 1 MiB de sonde (pas de stall).\n\nÀ installer puis **redémarrer Jellyfin** et relancer les sessions live. Vérification rapide dans le log : `arming overlap trim at clock` doit apparaître à chaque reconnexion, suivi de `trimmed N bytes of reconnect overlap`.",
+        "checksum": "2c6ad7c4abf84433ed62d18d55f522f6",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.7.2/octet-xtream_0.9.7.2.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-06-10T11:31:59Z",
+        "version": "0.9.7.2"
+      },
+      {
         "changelog": "## Le trim d'overlap s'arme désormais vraiment (horloge PES, pas PCR)\n\nLa validation ffprobe post-déploiement de la 0.9.7.0 (2 chaînes, 180 s chacune) a montré : **gel corrigé** (0,996 s de média produit par seconde réelle, contre une playlist gelée à 21 s avant) — mais les **blobs de replay toujours présents**, avec zéro ligne « trimmed »/« barren » dans le log sur 46 reconnexions. Cause : le trim se gatait sur le **PCR**, que ces feeds provider ne portent pas (le pacing PCR retombait déjà sur le plafond en octets pour la même raison). Il ne s'armait donc jamais.\n\n- L'horloge du gate est désormais le **DTS des en-têtes PES vidéo** (PTS en secours) : présent à chaque frame, monotone par flux, mêmes unités 90 kHz. Décodage validé contre `ffprobe` sur un TS de référence.\n- L'armement du trim (ou son échec) est **loggé à chaque reconnexion** — l'engagement du fix est vérifiable dans le log serveur (« arming overlap trim at clock … » / « reconnecting WITHOUT overlap trim »).\n\nÀ installer par-dessus la 0.9.7.0, puis **redémarrer Jellyfin** et relancer les sessions live.",
         "checksum": "79bb68353395bcbb1267734395d949e4",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.7.1/octet-xtream_0.9.7.1.zip",
