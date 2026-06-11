@@ -25,13 +25,21 @@ namespace Jellyfin.Xtream.Service;
 public class WrappedBufferReadStream : Stream
 {
     /// <summary>
-    /// How far behind the live edge a (re)attaching consumer starts, in bytes. Must be small:
-    /// FFmpeg re-GETs this stream mid-session (HTTP reconnect), and every byte of history handed
-    /// back to that same demuxer input is a timestamp rewind it muxes as a freeze/desync burst.
-    /// 2 MiB ≈ 2 s at 8 Mbps — enough trailing data to find PAT/PMT and a keyframe quickly,
-    /// without replaying a 16 MiB (~17 s) backlog like the previous BufferSize/2 policy did.
+    /// How deep behind the live edge a genuinely fresh consumer starts. The write side trims
+    /// reconnect overlap before it enters the buffer, so this span contains only clean, monotone
+    /// content — it is a standing delay buffer that absorbs the dead-air of upstream reconnects
+    /// (2 s backoff + re-downloading the provider's re-served backlog), which otherwise starves
+    /// the transcoder and pauses playback at every drop. ~20 MiB ≈ 13-20 s at typical bitrates.
     /// </summary>
-    private const long PrerollBytes = 2 * 1024 * 1024;
+    private const long DeepPrerollBytes = 20 * 1024 * 1024;
+
+    /// <summary>
+    /// How far behind the furthest already-consumed position a RE-attaching consumer resumes.
+    /// Must be small: an FFmpeg HTTP re-GET continues the same demuxer input, and every byte it
+    /// has already seen is replayed as a timestamp rewind (freeze + audio replay). 512 KiB keeps
+    /// enough trailing data to land on a PAT/PMT without a perceptible rewind.
+    /// </summary>
+    private const long ResumePrerollBytes = 512 * 1024;
 
     private readonly WrappedBufferStream _sourceBuffer;
 
@@ -44,7 +52,17 @@ public class WrappedBufferReadStream : Stream
     public WrappedBufferReadStream(WrappedBufferStream sourceBuffer)
     {
         _sourceBuffer = sourceBuffer;
-        _initialReadHead = Math.Max(0, sourceBuffer.TotalBytesWritten - PrerollBytes);
+
+        // Fresh session (nobody consumed far yet): start deep for the delay buffer. Re-attach
+        // (a previous reader already consumed up to MaxReadHead): resume just behind that point
+        // so the demuxer is not re-fed a long span it has already muxed. Never start beyond the
+        // live edge nor on bytes the ring has already overwritten.
+        long deepStart = sourceBuffer.TotalBytesWritten - DeepPrerollBytes;
+        long resumeStart = sourceBuffer.MaxReadHead - ResumePrerollBytes;
+        long start = Math.Max(deepStart, resumeStart);
+        start = Math.Min(start, sourceBuffer.TotalBytesWritten);
+        start = Math.Max(start, sourceBuffer.TotalBytesWritten - sourceBuffer.BufferSize);
+        _initialReadHead = Math.Max(0, start);
         ReadHead = _initialReadHead;
     }
 
@@ -97,7 +115,7 @@ public class WrappedBufferReadStream : Stream
             // killing the whole stream (which froze playback), skip forward to recent data and carry on.
             // The consumer sees a jump instead of a hard failure. Resume close to the live edge: every
             // byte of stale history re-read here reaches the demuxer as a timestamp rewind.
-            ReadHead = _sourceBuffer.TotalBytesWritten - PrerollBytes;
+            ReadHead = _sourceBuffer.TotalBytesWritten - ResumePrerollBytes;
             gap = _sourceBuffer.TotalBytesWritten - ReadHead;
         }
 
@@ -116,6 +134,10 @@ public class WrappedBufferReadStream : Stream
             read += readable;
             ReadHead += readable;
         }
+
+        // Publish the consumption high-water mark so a re-attaching consumer resumes here instead
+        // of being re-fed history its demuxer has already muxed.
+        _sourceBuffer.ReportReadHead(ReadHead);
 
         return (int)read;
     }

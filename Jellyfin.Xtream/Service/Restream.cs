@@ -76,6 +76,13 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// <summary>Give up TS alignment past this many sync-less bytes and degrade to a raw copy.</summary>
     private const long RawPassthroughThresholdBytes = 1024 * 1024;
 
+    /// <summary>
+    /// A connection that delivered at least this much fresh content ended on the provider's normal
+    /// chunk rhythm — reconnect almost immediately. Below it, the reconnect was (near-)futile and
+    /// deserves a real backoff so a dead upstream can't spin a tight loop.
+    /// </summary>
+    private const long HealthyConnectionBytes = 2L * 1024 * 1024;
+
     /// <summary>Cap on the accumulated skip baseline, bounding total drift from the Caledonian alignment per session.</summary>
     private static readonly TimeSpan MaxSkipBaseline = TimeSpan.FromMinutes(15);
 
@@ -150,7 +157,10 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         _pace = pace;
         MediaSource = mediaSource;
 
-        _buffer = new WrappedBufferStream(32 * 1024 * 1024); // 32MiB — headroom for FFmpeg stalls on discontinuities
+        // 64 MiB: must hold the consumer's ~20 MiB standing delay buffer (WrappedBufferReadStream
+        // deep preroll, which absorbs upstream reconnect dead-air) PLUS headroom for FFmpeg stalls
+        // and the provider's post-reconnect delivery bursts before the writer laps the reader.
+        _buffer = new WrappedBufferStream(64 * 1024 * 1024);
         _tokenSource = new CancellationTokenSource();
 
         OriginalStreamId = MediaSource.Id;
@@ -664,8 +674,16 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     {
         try
         {
-            // Backoff so an upstream that EOFs instantly can't spin a tight loop.
-            await Task.Delay(TimeSpan.FromSeconds(2), _tokenSource.Token).ConfigureAwait(false);
+            // Adaptive backoff: after a healthy connection the EOF is just the provider's chunk
+            // rhythm, and every idle millisecond here is dead-air draining the consumer's delay
+            // buffer — reconnect almost immediately. Only a (near-)futile connection waits, so an
+            // upstream that EOFs instantly can't spin a tight loop. Field data (World Cup load):
+            // reconnects every ~40 s with a fixed 2 s backoff + backlog re-download produced
+            // multi-second playback stalls at every single drop.
+            TimeSpan backoff = _deliveredThisConnection >= HealthyConnectionBytes
+                ? TimeSpan.FromMilliseconds(250)
+                : TimeSpan.FromSeconds(2);
+            await Task.Delay(backoff, _tokenSource.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

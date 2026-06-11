@@ -15,6 +15,7 @@
 
 using System;
 using System.IO;
+using System.Threading;
 
 namespace Jellyfin.Xtream.Service;
 
@@ -24,6 +25,8 @@ namespace Jellyfin.Xtream.Service;
 /// <param name="bufferSize">Size in bytes of the internal buffer.</param>
 public class WrappedBufferStream(int bufferSize) : Stream
 {
+    private long _maxReadHead;
+
     /// <summary>
     /// Gets the maximal size in bytes of read/write chunks.
     /// </summary>
@@ -40,6 +43,15 @@ public class WrappedBufferStream(int bufferSize) : Stream
     /// Gets the number of bytes that have been written to this stream.
     /// </summary>
     public long TotalBytesWritten { get; private set; }
+
+    /// <summary>
+    /// Gets the furthest virtual position any reader has consumed up to. A (re)attaching consumer
+    /// resumes just behind this point instead of deep in the past, so an FFmpeg HTTP re-GET is not
+    /// fed a long span its demuxer has already seen (a timestamp rewind), while a genuinely fresh
+    /// session (high-water mark still low) starts with a deep preroll that buys a standing buffer
+    /// against upstream reconnect dead-air.
+    /// </summary>
+    public long MaxReadHead => Volatile.Read(ref _maxReadHead);
 
     /// <inheritdoc />
     public override long Position
@@ -90,5 +102,25 @@ public class WrappedBufferStream(int bufferSize) : Stream
     public override void Flush()
     {
         // Do nothing
+    }
+
+    /// <summary>
+    /// Raises <see cref="MaxReadHead"/> to <paramref name="readHead"/> when it is further than any
+    /// position reported so far. Thread-safe; called by readers on every read.
+    /// </summary>
+    /// <param name="readHead">The reader's current virtual position.</param>
+    public void ReportReadHead(long readHead)
+    {
+        long current = Volatile.Read(ref _maxReadHead);
+        while (readHead > current)
+        {
+            long seen = Interlocked.CompareExchange(ref _maxReadHead, readHead, current);
+            if (seen == current)
+            {
+                break;
+            }
+
+            current = seen;
+        }
     }
 }
