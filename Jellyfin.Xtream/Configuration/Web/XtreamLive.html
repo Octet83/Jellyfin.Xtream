@@ -27,6 +27,15 @@
             are hidden from Live TV while this is enabled.
           </div>
         </div>
+        <div class="inputContainer">
+          <label class="inputLabel inputLabelUnfocused" for="LiveStartupDelay">Live startup buffer (seconds)</label>
+          <input is="emby-input" id="LiveStartupDelay" name="LiveStartupDelay" type="number" min="0" max="60" step="1" />
+          <div class="fieldDescription">
+            Fills the restream buffer for this many seconds before live playback starts. The deliberate delay absorbs
+            provider micro-drops (reconnects) at the cost of starting that far behind the real live edge. 0 disables.
+            Default: 12.
+          </div>
+        </div>
         <div class="sectionTitleContainer flex align-items-center">
           <h2 class="sectionTitle">Channel selection</h2>
         </div>

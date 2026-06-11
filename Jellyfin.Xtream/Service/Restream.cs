@@ -103,6 +103,7 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     private readonly string _url;
     private readonly Func<TimeSpan, string>? _urlProvider;
     private readonly bool _pace;
+    private readonly TimeSpan _startupPriming;
 
     private Task? _copyTask;
     private Stream? _inputStream;
@@ -149,12 +150,20 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// catch-up/timeshift feeds, which the provider delivers as a fast download rather than a paced live
     /// stream — without pacing the consumer races to the end and the stream stops after a few seconds.
     /// </param>
-    public Restream(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger logger, MediaSourceInfo mediaSource, Func<TimeSpan, string>? urlProvider = null, bool pace = false)
+    /// <param name="startupPriming">
+    /// How long the buffer fills before <see cref="Open"/> returns and the consumer starts. The
+    /// deliberate delay creates a standing cushion that absorbs upstream reconnect dead-air (the
+    /// provider drops the connection every few tens of seconds under load, and re-serving its
+    /// backlog takes seconds during which nothing fresh arrives). Playback starts — and stays —
+    /// that far behind the real live edge. <see cref="TimeSpan.Zero"/> disables priming.
+    /// </param>
+    public Restream(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger logger, MediaSourceInfo mediaSource, Func<TimeSpan, string>? urlProvider = null, bool pace = false, TimeSpan startupPriming = default)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
         _urlProvider = urlProvider;
         _pace = pace;
+        _startupPriming = startupPriming;
         MediaSource = mediaSource;
 
         // 64 MiB: must hold the consumer's ~20 MiB standing delay buffer (WrappedBufferReadStream
@@ -209,6 +218,26 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         // Await the first connection so the buffer starts filling before Open returns; later
         // upstream EOFs are handled in the background by ConnectAndPump's continuation.
         await ConnectAndPumpAsync(openCancellationToken).ConfigureAwait(true);
+
+        // Prime the buffer before letting the consumer start: the provider keeps streaming during
+        // the wait, so playback begins with a standing cushion of that many seconds and an upstream
+        // drop shorter than the cushion never reaches the player. The zap takes correspondingly
+        // longer — the client shows a loader for it.
+        if (_startupPriming > TimeSpan.Zero)
+        {
+            _logger.LogInformation(
+                "Priming restream buffer for channel {ChannelId} for {Seconds:F0}s before playback.",
+                MediaSource.Id,
+                _startupPriming.TotalSeconds);
+            try
+            {
+                await Task.Delay(_startupPriming, openCancellationToken).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+                // The caller gave up on the stream while priming; nothing to clean up here.
+            }
+        }
     }
 
     /// <summary>

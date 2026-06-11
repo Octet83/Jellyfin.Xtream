@@ -350,8 +350,11 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
         if (stream == null)
         {
             // Catch-up feeds are delivered as a fast download, so they must be paced to ~1x; the real
-            // live feed is already paced by the provider and is restreamed as-is.
-            stream = new Restream(appHost, httpClientFactory, logger, mediaSourceInfo, urlProvider, pace: useCaledonianShift);
+            // live feed is already paced by the provider and is restreamed as-is. The startup priming
+            // delay trades zap time for a standing buffer that absorbs upstream reconnect dead-air.
+            TimeSpan priming = TimeSpan.FromSeconds(
+                Math.Clamp(plugin.Configuration.LiveStartupDelaySeconds, 0, 60));
+            stream = new Restream(appHost, httpClientFactory, logger, mediaSourceInfo, urlProvider, pace: useCaledonianShift, startupPriming: priming);
             await stream.Open(cancellationToken).ConfigureAwait(false);
         }
 

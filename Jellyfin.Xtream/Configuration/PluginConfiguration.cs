@@ -98,5 +98,14 @@ public class PluginConfiguration : BasePluginConfiguration
     /// and channels without catch-up support are hidden from Live TV.
     /// </summary>
     public bool LiveAtCaledonianTime { get; set; }
+
+    /// <summary>
+    /// Gets or sets the number of seconds the restream buffer is primed before live playback starts.
+    /// The deliberate delay builds a standing cushion that absorbs the dead-air of upstream
+    /// reconnects (the provider dropping the connection every few tens of seconds under load), at
+    /// the cost of starting — and staying — that many seconds behind the real live edge.
+    /// 0 disables priming.
+    /// </summary>
+    public int LiveStartupDelaySeconds { get; set; } = 12;
 }
 #pragma warning restore CA2227
