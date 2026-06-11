@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Tampon de démarrage configurable : les micro-coupures provider deviennent invisibles\n\nAu bord du live, aucun coussin ne peut se former (le provider envoie 1 s de contenu par seconde, le consommateur la mange aussitôt) : chaque reconnexion upstream se traduisait par une pause à l'écran — toutes les ~40 s sous charge Coupe du monde, malgré le trim.\n\n- **`Live startup buffer`** (page de config Live TV, défaut **12 s**, 0-60, 0 = désactivé) : à l'ouverture d'une chaîne, le buffer se remplit pendant N secondes avant que la lecture démarre. Toute coupure provider plus courte que le coussin est absorbée sans que le player s'en aperçoive ; la rafale post-reconnexion reconstitue la réserve.\n- Coût assumé : le zap prend ~N secondes de plus et la lecture reste N secondes derrière le direct réel. L'app affiche un loader explicite pendant la préparation.\n\nS'appuie sur la 0.9.7.x : le coussin n'est sûr **que** parce que le trim garantit un buffer au contenu propre et monotone.",
+        "checksum": "23188db0b861298516e601f8980465f4",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.8.0/octet-xtream_0.9.8.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-06-11T23:41:53Z",
+        "version": "0.9.8.0"
+      },
+      {
         "changelog": "## Réduire les trous de lecture pendant les rafales de reconnexions provider\n\nDonnées terrain (matin Coupe du monde) : le trim de la 0.9.7.2 a fonctionné — **516 armements, 511 trims, 9,4 GB de replay éliminés**, plus aucun rewind n'atteint le demuxer. Mais le provider, sous charge, raccrochait **toutes les ~40 s** (rafales à 2-3 s), et chaque cycle coûtait 2 s de backoff fixe + le re-téléchargement de jusqu'à 78 MB de backlog à jeter → le consommateur (ffmpeg) était affamé → pauses à chaque coupure.\n\n- **Backoff adaptatif** : 250 ms après une connexion saine (≥ 2 MiB livrés — l'EOF n'est que le rythme de chunks du provider), 2 s seulement après une connexion stérile (anti-boucle).\n- **Reprise au high-water mark** : le buffer suit la position maximale consommée ; un consommateur qui se ré-attache (re-GET HTTP de ffmpeg) reprend 512 KiB derrière ce point au lieu d'un preroll fixe depuis le bord live — plus aucun segment déjà muxé n'est re-servi (élimine la couture résiduelle de ~2 s). Une session vraiment neuve démarre jusqu'à 20 MiB en arrière quand l'historique existe.\n- **Ring buffer 32 → 64 MiB.**\n\nÀ installer puis **redémarrer Jellyfin**. NB : si le provider s'effondre à nouveau (raccrochages toutes les 2-3 s), aucun restream ne fabriquera du débit manquant — ces changements réduisent le coût de chaque coupure, pas leur existence.",
         "checksum": "f5a542e8a9b428867ab07fb629ff2b9e",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.7.3/octet-xtream_0.9.7.3.zip",
