@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Forcer certaines chaînes en vrai live (par chaîne)\n\n`LiveAtCaledonianTime` est **global** : il décale toutes les chaînes catch-up à l'heure calédonienne. Pratique pour France 2, mais faux pour le sport — un match doit se voir **en direct**, pas décalé.\n\n- Nouvelle case **« Live »** sur la page **Live TV → overrides** (à côté de Numéro / Nom / Logo). Coche-la sur tes chaînes Bein : elles jouent alors le vrai direct (et leur EPG est à l'heure réelle), pendant que les autres restent décalées à l'heure calédonienne.\n- Réglage par chaîne, persistant. Décoche pour revenir au comportement décalé.\n\nÀ installer puis redémarrer Jellyfin ; relance la chaîne après avoir coché la case.",
+        "checksum": "67cb263ad13f8411033fc11fb6c5d05e",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.9.0/octet-xtream_0.9.9.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-06-15T00:51:27Z",
+        "version": "0.9.9.0"
+      },
+      {
         "changelog": "## Tampon de démarrage configurable : les micro-coupures provider deviennent invisibles\n\nAu bord du live, aucun coussin ne peut se former (le provider envoie 1 s de contenu par seconde, le consommateur la mange aussitôt) : chaque reconnexion upstream se traduisait par une pause à l'écran — toutes les ~40 s sous charge Coupe du monde, malgré le trim.\n\n- **`Live startup buffer`** (page de config Live TV, défaut **12 s**, 0-60, 0 = désactivé) : à l'ouverture d'une chaîne, le buffer se remplit pendant N secondes avant que la lecture démarre. Toute coupure provider plus courte que le coussin est absorbée sans que le player s'en aperçoive ; la rafale post-reconnexion reconstitue la réserve.\n- Coût assumé : le zap prend ~N secondes de plus et la lecture reste N secondes derrière le direct réel. L'app affiche un loader explicite pendant la préparation.\n\nS'appuie sur la 0.9.7.x : le coussin n'est sûr **que** parce que le trim garantit un buffer au contenu propre et monotone.",
         "checksum": "23188db0b861298516e601f8980465f4",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.8.0/octet-xtream_0.9.8.0.zip",
