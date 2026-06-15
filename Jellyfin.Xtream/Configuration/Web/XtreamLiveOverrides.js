@@ -39,6 +39,17 @@ export default function (view) {
     td.appendChild(image);
     tr.appendChild(td);
 
+    td = document.createElement('td');
+    const live = document.createElement('input');
+    live.type = 'checkbox';
+    live.setAttribute('is', 'emby-checkbox');
+    live.checked = overrides.ForceLive ?? false;
+    live.onchange = () => live.checked ?
+      overrides.ForceLive = true :
+      delete overrides.ForceLive;
+    td.appendChild(live);
+    tr.appendChild(td);
+
     return tr;
   };
 

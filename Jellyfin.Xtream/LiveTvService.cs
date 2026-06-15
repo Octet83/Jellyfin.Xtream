@@ -250,6 +250,16 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
     }
 
     /// <summary>
+    /// Whether the channel is pinned to the real live feed via a per-channel override, overriding the
+    /// global Caledonian time-shift (e.g. sports channels kept live while the rest stays shifted).
+    /// </summary>
+    /// <param name="streamId">The Xtream stream id of the channel.</param>
+    /// <returns><c>true</c> when the channel must always be served live.</returns>
+    private static bool IsForcedLive(int streamId) =>
+        Plugin.Instance.Configuration.LiveTvOverrides.TryGetValue(streamId, out ChannelOverrides? ov)
+        && (ov.ForceLive ?? false);
+
+    /// <summary>
     /// Computes the time span by which the given channel's EPG must be shifted so that the program guide
     /// matches the Caledonian-time catch-up stream. The shift mirrors <see cref="GetCaledonianAlignedStart"/>:
     /// the content on screen always has the provider-local time-of-day equal to the current Caledonian
@@ -261,7 +271,7 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
     private async Task<TimeSpan> GetCaledonianProgramShiftAsync(int streamId, CancellationToken cancellationToken)
     {
         Plugin plugin = Plugin.Instance;
-        if (!plugin.Configuration.LiveAtCaledonianTime)
+        if (!plugin.Configuration.LiveAtCaledonianTime || IsForcedLive(streamId))
         {
             return TimeSpan.Zero;
         }
@@ -300,8 +310,10 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
         Plugin plugin = Plugin.Instance;
 
         // Only catch-up capable channels can be time-shifted; the others stay on the real live feed.
+        // A per-channel "force live" override pins a channel to the real feed (e.g. sports during a
+        // match) even with the global Caledonian shift on.
         bool useCaledonianShift = false;
-        if (plugin.Configuration.LiveAtCaledonianTime)
+        if (plugin.Configuration.LiveAtCaledonianTime && !IsForcedLive(channel))
         {
             IEnumerable<StreamInfo> streams = await plugin.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false);
             useCaledonianShift = streams.Any(s => s.StreamId == channel && s.TvArchive);

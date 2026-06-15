@@ -47,4 +47,12 @@ public class ChannelOverrides
     /// This allows reassigning the correct guide data when the provider mapping is wrong.
     /// </summary>
     public int? EpgStreamId { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether this channel always plays the real live feed, even when
+    /// <see cref="PluginConfiguration.LiveAtCaledonianTime"/> would otherwise time-shift it. Set this on
+    /// channels you want live (e.g. sports) while keeping the Caledonian shift for the rest. Its EPG is
+    /// shown at real (provider) time too.
+    /// </summary>
+    public bool? ForceLive { get; set; }
 }
