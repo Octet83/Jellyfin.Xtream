@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Une seule entrée par chaîne, avec toutes ses qualités\n\nLes chaînes sélectionnées qui sont la même chaîne en plusieurs qualités (« TF1 HD », « TF1 FHD », « TF1 4K », même préfixe pays) n'apparaissent plus qu'une fois dans Live TV. Toutes les qualités du catalogue du fournisseur, cochées ou non, restent disponibles comme sources de cette chaîne.\n\n- Nouvelle case **« Show each channel once, with its qualities »** sur la page **Live TV** du plugin, cochée par défaut. Décoche-la pour retrouver une entrée par qualité.\n- La chaîne conservée pour un groupe est la HD (celle qui porte le différé « heure calédo »), puis la FHD, puis le reste. Le choix est stable d'un rafraîchissement à l'autre.\n- Les séparateurs du fournisseur (« ##### FRANCE 4K ##### ») ne sont plus listés comme des chaînes.\n\nÀ savoir : un favori posé sur une version fusionnée (par exemple « TF1 4K ») disparaît avec elle ; il faut le remettre sur la chaîne conservée.\n\nÀ installer puis redémarrer Jellyfin. La liste des chaînes se met à jour au rafraîchissement du guide.\n",
+        "checksum": "14dc4996acca95ac268b9eecdf9ff37b",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.11.0/octet-xtream_0.9.11.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-11-15T23:06:45Z",
+        "version": "0.9.11.0"
+      },
+      {
         "changelog": "## Choix de la qualité par chaîne (HD / FHD / 4K)\n\nLe fournisseur liste chaque qualité d'une chaîne comme un flux séparé (« TF1 HD », « TF1 FHD », « TF1 4K », « TF1 FHD ᴿᴬᵂ »). Le plugin les regroupe désormais par nom, sur tout le catalogue, et les expose comme **sources** de la chaîne : il suffit d'avoir activé « TF1 HD » pour se voir proposer la FHD et la 4K.\n\n- Chaque chaîne Live TV expose une source par qualité. En mode « heure calédo », les qualités qui ont le différé proposent aussi une variante **direct**.\n- Un client choisit la source en passant son identifiant en `MediaSourceId` à l'ouverture. Sans choix, rien ne change : même flux et même comportement qu'avant.\n- Nouvel endpoint `GET /Xtream/LiveTv/Sources` (tout utilisateur connecté) : la liste des qualités par chaîne, pour les badges et le sélecteur de Jellyflix.\n\nÀ savoir : chez le fournisseur, seule la HD a le différé. Les autres qualités (FHD, 4K, SD, RAW) passent en direct, à l'heure de Paris, et le guide de la chaîne reste affiché à l'heure calédo.\n\nÀ installer puis redémarrer Jellyfin.\n",
         "checksum": "2d2c3d8165c34f433a4ce0bf5a74e20d",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.10.0/octet-xtream_0.9.10.0.zip",
