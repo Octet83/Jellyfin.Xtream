@@ -107,5 +107,13 @@ public class PluginConfiguration : BasePluginConfiguration
     /// 0 disables priming.
     /// </summary>
     public int LiveStartupDelaySeconds { get; set; } = 12;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the selected channels that are the same channel in
+    /// different qualities ("TF1 HD", "TF1 FHD", "TF1 4K", same country prefix) are shown as a single
+    /// Live TV channel. The qualities stay available as the channel's media sources, which also list
+    /// the qualities found in the provider catalogue that were not selected.
+    /// </summary>
+    public bool MergeQualityVariants { get; set; } = true;
 }
 #pragma warning restore CA2227

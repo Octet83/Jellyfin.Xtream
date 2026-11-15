@@ -251,6 +251,60 @@ public partial class StreamService(IXtreamClient xtreamClient)
         return index.GroupKeys.TryGetValue(channelStreamId, out string? key) ? key : UngroupedKey(channelStreamId);
     }
 
+    /// <summary>
+    /// Gets the selected channels that are hidden because they are another quality of a channel
+    /// already shown (<see cref="PluginConfiguration.MergeQualityVariants"/>). Their quality stays
+    /// playable as a media source of the channel that represents the group.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The Xtream stream ids to leave out of the Live TV channel list.</returns>
+    public async Task<IReadOnlySet<int>> GetMergedAwayLiveStreams(CancellationToken cancellationToken)
+    {
+        if (!Plugin.Instance.Configuration.MergeQualityVariants)
+        {
+            return new HashSet<int>();
+        }
+
+        VariantIndex index = await GetVariantIndex(cancellationToken).ConfigureAwait(false);
+        return index.MergedAway;
+    }
+
+    /// <summary>
+    /// Orders two qualities of the same channel to pick the one shown in the channel list. The plain
+    /// HD stream wins (it is the one providers keep a catch-up archive for, so the one the Caledonian
+    /// time-shift needs), then FHD, then the rest by decreasing quality. The catch-up flag itself is
+    /// deliberately not used: it flaps on the provider side and the pick must not change between
+    /// refreshes (the Jellyfin channel item, its favourites and its EPG hang off it).
+    /// </summary>
+    private static int CompareRepresentative(Variant a, Variant b, PluginConfiguration config)
+    {
+        static int Tier(Variant v) => v.Label switch
+        {
+            "HD" => 0,
+            "FHD" => 1,
+            _ => v.Label.Contains(' ', StringComparison.Ordinal) ? 3 : 2,
+        };
+
+        int result = Tier(a).CompareTo(Tier(b));
+        if (result == 0)
+        {
+            result = b.Rank.CompareTo(a.Rank);
+        }
+
+        if (result == 0)
+        {
+            // A channel the admin customised (number, logo, forced live…) keeps its settings.
+            result = config.LiveTvOverrides.ContainsKey(b.StreamId).CompareTo(config.LiveTvOverrides.ContainsKey(a.StreamId));
+        }
+
+        if (result == 0)
+        {
+            result = a.Num.CompareTo(b.Num);
+        }
+
+        return result == 0 ? a.StreamId.CompareTo(b.StreamId) : result;
+    }
+
     private static string UngroupedKey(int streamId) => "#" + streamId.ToString(CultureInfo.InvariantCulture);
 
     private static LiveSource CreateLiveSource(Variant variant, StreamType type, bool isDefault) => new()
@@ -299,6 +353,7 @@ public partial class StreamService(IXtreamClient xtreamClient)
 
         Dictionary<int, IReadOnlyList<Variant>> byChannel = [];
         Dictionary<int, string> groupKeys = [];
+        Dictionary<string, Variant> representatives = new(StringComparer.Ordinal);
         foreach (StreamInfo channel in all)
         {
             if (!channel.CategoryId.HasValue || !IsConfigured(config.LiveTv, channel.CategoryId.Value, channel.StreamId))
@@ -329,10 +384,19 @@ public partial class StreamService(IXtreamClient xtreamClient)
             }
 
             byChannel[channel.StreamId] = list;
-            groupKeys[channel.StreamId] = parsed ? quality.Key : UngroupedKey(channel.StreamId);
+            string groupKey = parsed ? quality.Key : UngroupedKey(channel.StreamId);
+            groupKeys[channel.StreamId] = groupKey;
+            if (!representatives.TryGetValue(groupKey, out Variant? current)
+                || CompareRepresentative(self, current, config) < 0)
+            {
+                representatives[groupKey] = self;
+            }
         }
 
-        index = new VariantIndex(DateTime.UtcNow + _variantTtl, byChannel, groupKeys);
+        // The selected channels merged into another one: every channel of a group but its representative.
+        HashSet<int> mergedAway = [.. groupKeys.Where(kv => representatives[kv.Value].StreamId != kv.Key).Select(kv => kv.Key)];
+
+        index = new VariantIndex(DateTime.UtcNow + _variantTtl, byChannel, groupKeys, mergedAway);
         _variantIndex = index;
         return index;
     }
@@ -669,5 +733,5 @@ public partial class StreamService(IXtreamClient xtreamClient)
 
     private sealed record Variant(int StreamId, int Num, string Label, int Rank, bool HasCatchup, string Name);
 
-    private sealed record VariantIndex(DateTime Expiry, Dictionary<int, IReadOnlyList<Variant>> ByChannel, Dictionary<int, string> GroupKeys);
+    private sealed record VariantIndex(DateTime Expiry, Dictionary<int, IReadOnlyList<Variant>> ByChannel, Dictionary<int, string> GroupKeys, HashSet<int> MergedAway);
 }

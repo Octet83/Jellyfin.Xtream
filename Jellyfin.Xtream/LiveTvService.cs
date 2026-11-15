@@ -61,8 +61,21 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
         var overrides = plugin.Configuration.LiveTvOverrides;
         bool caledonianMode = plugin.Configuration.LiveAtCaledonianTime;
         List<ChannelInfo> items = [];
+        IReadOnlySet<int> mergedAway = await plugin.StreamService.GetMergedAwayLiveStreams(cancellationToken).ConfigureAwait(false);
         foreach (StreamInfo channel in await plugin.StreamService.GetLiveStreamsWithOverrides(cancellationToken).ConfigureAwait(false))
         {
+            if (channel.Name.TrimStart().StartsWith('#'))
+            {
+                // Provider group separators ("##### FRANCE 4K #####") are not playable channels.
+                continue;
+            }
+
+            if (mergedAway.Contains(channel.StreamId))
+            {
+                // Another quality of a channel already listed; offered as one of its media sources.
+                continue;
+            }
+
             ParsedName parsed = StreamService.ParseName(channel.Name);
             overrides.TryGetValue(channel.StreamId, out ChannelOverrides? channelOverrides);
 
