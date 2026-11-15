@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Choix de la qualité par chaîne (HD / FHD / 4K)\n\nLe fournisseur liste chaque qualité d'une chaîne comme un flux séparé (« TF1 HD », « TF1 FHD », « TF1 4K », « TF1 FHD ᴿᴬᵂ »). Le plugin les regroupe désormais par nom, sur tout le catalogue, et les expose comme **sources** de la chaîne : il suffit d'avoir activé « TF1 HD » pour se voir proposer la FHD et la 4K.\n\n- Chaque chaîne Live TV expose une source par qualité. En mode « heure calédo », les qualités qui ont le différé proposent aussi une variante **direct**.\n- Un client choisit la source en passant son identifiant en `MediaSourceId` à l'ouverture. Sans choix, rien ne change : même flux et même comportement qu'avant.\n- Nouvel endpoint `GET /Xtream/LiveTv/Sources` (tout utilisateur connecté) : la liste des qualités par chaîne, pour les badges et le sélecteur de Jellyflix.\n\nÀ savoir : chez le fournisseur, seule la HD a le différé. Les autres qualités (FHD, 4K, SD, RAW) passent en direct, à l'heure de Paris, et le guide de la chaîne reste affiché à l'heure calédo.\n\nÀ installer puis redémarrer Jellyfin.\n",
+        "checksum": "2d2c3d8165c34f433a4ce0bf5a74e20d",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.10.0/octet-xtream_0.9.10.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-11-15T22:33:01Z",
+        "version": "0.9.10.0"
+      },
+      {
         "changelog": "## Forcer certaines chaînes en vrai live (par chaîne)\n\n`LiveAtCaledonianTime` est **global** : il décale toutes les chaînes catch-up à l'heure calédonienne. Pratique pour France 2, mais faux pour le sport — un match doit se voir **en direct**, pas décalé.\n\n- Nouvelle case **« Live »** sur la page **Live TV → overrides** (à côté de Numéro / Nom / Logo). Coche-la sur tes chaînes Bein : elles jouent alors le vrai direct (et leur EPG est à l'heure réelle), pendant que les autres restent décalées à l'heure calédonienne.\n- Réglage par chaîne, persistant. Décoche pour revenir au comportement décalé.\n\nÀ installer puis redémarrer Jellyfin ; relance la chaîne après avoir coché la case.",
         "checksum": "67cb263ad13f8411033fc11fb6c5d05e",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.9.0/octet-xtream_0.9.9.0.zip",
