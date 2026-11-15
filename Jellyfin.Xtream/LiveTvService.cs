@@ -28,6 +28,7 @@ using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
@@ -149,8 +150,41 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
     /// <inheritdoc />
     public async Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)
     {
-        MediaSourceInfo source = await GetChannelStream(channelId, string.Empty, cancellationToken).ConfigureAwait(false);
-        return [source];
+        // One media source per playable quality (and, in Caledonian mode, per time-shifted / live
+        // mode). Clients pick one by passing its id as MediaSourceId when opening the channel; the
+        // first one is the default. The provider URL is deliberately left out: it carries the
+        // credentials and the stream is only ever served through the restream.
+        int channel = ParseChannelId(channelId);
+        IReadOnlyList<LiveSource> sources = await Plugin.Instance.StreamService.GetLiveSources(channel, cancellationToken).ConfigureAwait(false);
+        return sources
+            .Select(source => new MediaSourceInfo
+            {
+                Id = source.SourceId,
+                Name = source.TimeShifted ? $"{source.Label} · {StreamService.CatchupCategoryName}" : source.Label,
+                Protocol = MediaProtocol.Http,
+                EncoderProtocol = MediaProtocol.Http,
+                IsInfiniteStream = true,
+                IsRemote = true,
+                RequiresOpening = true,
+                RequiresClosing = true,
+                SupportsDirectPlay = true,
+                SupportsDirectStream = true,
+                SupportsProbing = false,
+                MediaStreams = [],
+            })
+            .ToList();
+    }
+
+    private static int ParseChannelId(string channelId)
+    {
+        Guid guid = Guid.Parse(channelId);
+        StreamService.FromGuid(guid, out int prefix, out int streamId, out int _, out int _);
+        if (prefix != StreamService.LiveTvPrefix)
+        {
+            throw new ArgumentException("Unsupported channel");
+        }
+
+        return streamId;
     }
 
     /// <inheritdoc />
@@ -300,20 +334,52 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
     /// <inheritdoc />
     public async Task<ILiveStream> GetChannelStreamWithDirectStreamProvider(string channelId, string streamId, List<ILiveStream> currentLiveStreams, CancellationToken cancellationToken)
     {
-        Guid guid = Guid.Parse(channelId);
-        StreamService.FromGuid(guid, out int prefix, out int channel, out int _, out int _);
-        if (prefix != StreamService.LiveTvPrefix)
-        {
-            throw new ArgumentException("Unsupported channel");
-        }
+        // The Jellyfin channel; `channel` below is the provider stream actually played, which is
+        // another stream when the client picked a quality variant.
+        int ownStreamId = ParseChannelId(channelId);
+        int channel = ownStreamId;
 
         Plugin plugin = Plugin.Instance;
+
+        // The client may name one of the sources listed by GetChannelStreamMediaSources (a quality
+        // variant and/or the real live feed instead of the time-shifted one). The id is only honoured
+        // when it is one of this channel's sources, so a client cannot open an arbitrary provider
+        // stream. The default source — and an unknown or missing id — keeps the historical behaviour.
+        bool explicitSource = false;
+        bool wantShift = true;
+        if (Guid.TryParse(streamId, out Guid sourceGuid))
+        {
+            string sourceId = sourceGuid.ToString();
+            IReadOnlyList<LiveSource> sources = await plugin.StreamService.GetLiveSources(ownStreamId, cancellationToken).ConfigureAwait(false);
+            LiveSource? source = sources.FirstOrDefault(s => string.Equals(s.SourceId, sourceId, StringComparison.OrdinalIgnoreCase));
+            if (source is null)
+            {
+                logger.LogWarning("Unknown source {SourceId} requested for channel {ChannelId}; playing the default source", streamId, ownStreamId);
+            }
+            else if (!source.IsDefault)
+            {
+                explicitSource = true;
+                channel = source.StreamId;
+                wantShift = source.TimeShifted;
+                logger.LogInformation(
+                    "Channel {ChannelId}: playing source {Label} (stream {StreamId}, time-shifted: {TimeShifted})",
+                    ownStreamId,
+                    source.Label,
+                    source.StreamId,
+                    source.TimeShifted);
+            }
+        }
 
         // Only catch-up capable channels can be time-shifted; the others stay on the real live feed.
         // A per-channel "force live" override pins a channel to the real feed (e.g. sports during a
         // match) even with the global Caledonian shift on.
         bool useCaledonianShift = false;
-        if (plugin.Configuration.LiveAtCaledonianTime && !IsForcedLive(channel))
+        if (explicitSource)
+        {
+            // A time-shifted source is only ever listed for a catch-up capable stream with the shift allowed.
+            useCaledonianShift = wantShift;
+        }
+        else if (plugin.Configuration.LiveAtCaledonianTime && !IsForcedLive(channel))
         {
             IEnumerable<StreamInfo> streams = await plugin.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false);
             useCaledonianShift = streams.Any(s => s.StreamId == channel && s.TvArchive);

@@ -98,6 +98,12 @@ public partial class StreamService(IXtreamClient xtreamClient)
 
     private static readonly Regex _tagRegex = TagRegex();
 
+    // The quality-variant index needs the provider's whole live catalogue (tens of thousands of
+    // streams), so it is kept for a while instead of being rebuilt on every channel open.
+    private static readonly TimeSpan _variantTtl = TimeSpan.FromMinutes(15);
+
+    private volatile VariantIndex? _variantIndex;
+
     /// <summary>
     /// Parses tags in the name of a stream entry.
     /// The name commonly contains tags of the forms:
@@ -188,6 +194,147 @@ public partial class StreamService(IXtreamClient xtreamClient)
 
             return stream;
         });
+    }
+
+    /// <summary>
+    /// Drops the cached quality-variant index, so the next lookup fetches the provider catalogue again.
+    /// Called when the configuration (selection, credentials, Caledonian mode) changes.
+    /// </summary>
+    public void InvalidateLiveVariants() => _variantIndex = null;
+
+    /// <summary>
+    /// Gets the ways a Live TV channel can be played: one source per quality the provider offers the
+    /// channel in ("TF1 HD", "TF1 FHD", "TF1 4K" are separate provider streams), and for catch-up capable
+    /// streams in Caledonian mode both the time-shifted source and the real live one.
+    /// The first source is the default: the channel's own stream, time-shifted when it can be.
+    /// </summary>
+    /// <param name="channelStreamId">The Xtream stream id of the channel.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The playable sources, default first, then by decreasing quality.</returns>
+    public async Task<IReadOnlyList<LiveSource>> GetLiveSources(int channelStreamId, CancellationToken cancellationToken)
+    {
+        PluginConfiguration config = Plugin.Instance.Configuration;
+        VariantIndex index = await GetVariantIndex(cancellationToken).ConfigureAwait(false);
+        if (!index.ByChannel.TryGetValue(channelStreamId, out IReadOnlyList<Variant>? variants))
+        {
+            variants = [new Variant(channelStreamId, 0, QualityName.StandardLabel, 0, false, string.Empty)];
+        }
+
+        bool forcedLive = config.LiveTvOverrides.TryGetValue(channelStreamId, out ChannelOverrides? overrides)
+            && (overrides.ForceLive ?? false);
+        bool shiftAllowed = config.LiveAtCaledonianTime && !forcedLive;
+
+        List<LiveSource> sources = [];
+        foreach (Variant variant in variants)
+        {
+            if (shiftAllowed && variant.HasCatchup)
+            {
+                sources.Add(CreateLiveSource(variant, StreamType.CatchupLive, sources.Count == 0));
+            }
+
+            sources.Add(CreateLiveSource(variant, StreamType.Live, sources.Count == 0));
+        }
+
+        return sources;
+    }
+
+    /// <summary>
+    /// Gets the key shared by the configured channels that are the same channel in different
+    /// qualities ("TF1 HD" and "TF1 4K" both selected). Clients use it to show them as one entry.
+    /// </summary>
+    /// <param name="channelStreamId">The Xtream stream id of the channel.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The group key; unique to the channel when its name cannot be parsed.</returns>
+    public async Task<string> GetLiveGroupKey(int channelStreamId, CancellationToken cancellationToken)
+    {
+        VariantIndex index = await GetVariantIndex(cancellationToken).ConfigureAwait(false);
+        return index.GroupKeys.TryGetValue(channelStreamId, out string? key) ? key : UngroupedKey(channelStreamId);
+    }
+
+    private static string UngroupedKey(int streamId) => "#" + streamId.ToString(CultureInfo.InvariantCulture);
+
+    private static LiveSource CreateLiveSource(Variant variant, StreamType type, bool isDefault) => new()
+    {
+        SourceId = ToGuid(MediaSourcePrefix, (int)type, variant.StreamId, 0).ToString(),
+        StreamId = variant.StreamId,
+        Label = variant.Label,
+        Rank = variant.Rank,
+        TimeShifted = type == StreamType.CatchupLive,
+        IsDefault = isDefault,
+        Name = variant.Name,
+    };
+
+    /// <summary>
+    /// Builds (or returns the cached) index of the quality variants of every configured channel.
+    /// Variants are looked up in the provider's whole live catalogue, not only the configured selection:
+    /// selecting "TF1 HD" is enough to be offered "TF1 FHD" and "TF1 4K".
+    /// </summary>
+    private async Task<VariantIndex> GetVariantIndex(CancellationToken cancellationToken)
+    {
+        VariantIndex? index = _variantIndex;
+        if (index is not null && index.Expiry > DateTime.UtcNow)
+        {
+            return index;
+        }
+
+        PluginConfiguration config = Plugin.Instance.Configuration;
+        List<StreamInfo> all = await xtreamClient.GetLiveStreamsAsync(Plugin.Instance.Creds, cancellationToken).ConfigureAwait(false);
+
+        Dictionary<string, List<Variant>> byKey = new(StringComparer.Ordinal);
+        foreach (StreamInfo stream in all)
+        {
+            if (!QualityName.TryParse(stream.Name, out QualityName quality))
+            {
+                continue;
+            }
+
+            if (!byKey.TryGetValue(quality.Key, out List<Variant>? group))
+            {
+                group = [];
+                byKey[quality.Key] = group;
+            }
+
+            group.Add(new Variant(stream.StreamId, stream.Num, quality.Label, quality.Rank, stream.TvArchive, stream.Name));
+        }
+
+        Dictionary<int, IReadOnlyList<Variant>> byChannel = [];
+        Dictionary<int, string> groupKeys = [];
+        foreach (StreamInfo channel in all)
+        {
+            if (!channel.CategoryId.HasValue || !IsConfigured(config.LiveTv, channel.CategoryId.Value, channel.StreamId))
+            {
+                continue;
+            }
+
+            bool parsed = QualityName.TryParse(channel.Name, out QualityName quality);
+            Variant self = new(
+                channel.StreamId,
+                channel.Num,
+                parsed ? quality.Label : QualityName.StandardLabel,
+                parsed ? quality.Rank : 0,
+                channel.TvArchive,
+                channel.Name);
+
+            List<Variant> list = [self];
+            if (parsed && byKey.TryGetValue(quality.Key, out List<Variant>? candidates))
+            {
+                // One stream per quality label: providers often list the same quality several times
+                // (regional copies, backups). Prefer the catch-up capable one, then the provider order.
+                list.AddRange(candidates
+                    .Where(v => v.StreamId != self.StreamId && !string.Equals(v.Label, self.Label, StringComparison.Ordinal))
+                    .GroupBy(v => v.Label, StringComparer.Ordinal)
+                    .Select(g => g.OrderByDescending(v => v.HasCatchup).ThenBy(v => v.Num).First())
+                    .OrderByDescending(v => v.Rank)
+                    .ThenBy(v => v.Label, StringComparer.Ordinal));
+            }
+
+            byChannel[channel.StreamId] = list;
+            groupKeys[channel.StreamId] = parsed ? quality.Key : UngroupedKey(channel.StreamId);
+        }
+
+        index = new VariantIndex(DateTime.UtcNow + _variantTtl, byChannel, groupKeys);
+        _variantIndex = index;
+        return index;
     }
 
     /// <summary>
@@ -519,4 +666,8 @@ public partial class StreamService(IXtreamClient xtreamClient)
     // Pipe variants: | (U+007C), │ (U+2502), ┃ (U+2503), ｜ (U+FF5C)
     [GeneratedRegex(@"\[([^\]]+)\]|[|│┃｜]\s*([^|│┃｜]+?)\s*[|│┃｜]")]
     private static partial Regex TagRegex();
+
+    private sealed record Variant(int StreamId, int Num, string Label, int Rank, bool HasCatchup, string Name);
+
+    private sealed record VariantIndex(DateTime Expiry, Dictionary<int, IReadOnlyList<Variant>> ByChannel, Dictionary<int, string> GroupKeys);
 }

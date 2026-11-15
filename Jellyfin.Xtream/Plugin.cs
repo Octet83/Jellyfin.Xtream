@@ -127,6 +127,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         base.UpdateConfiguration(configuration);
 
+        // The selection, credentials or Caledonian mode may have changed.
+        StreamService.InvalidateLiveVariants();
+
         if (XtreamClient is XtreamClient client)
         {
             client.UpdateUserAgent();

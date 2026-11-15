@@ -15,15 +15,19 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Mime;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
 using Jellyfin.Xtream.Api.Models;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -36,7 +40,7 @@ namespace Jellyfin.Xtream.Api;
 [ApiController]
 [Route("[controller]")]
 [Produces(MediaTypeNames.Application.Json)]
-public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
+public class XtreamController(IXtreamClient xtreamClient, ILibraryManager libraryManager) : ControllerBase
 {
     private static CategoryResponse CreateCategoryResponse(Category category) =>
         new()
@@ -236,6 +240,51 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
         IEnumerable<StreamInfo> streams = await plugin.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false);
         var channels = streams.Select(stream => CreateChannelResponse(stream, categoryNames, overrides)).ToList();
         return Ok(channels);
+    }
+
+    /// <summary>
+    /// Get the playable sources of every Live TV channel: the qualities the provider offers each
+    /// channel in (HD, FHD, 4K, …) and whether each plays time-shifted or as the real live feed.
+    /// Open to every signed-in user: clients use it to show quality badges and a quality picker, then
+    /// pass the chosen <c>SourceId</c> as <c>MediaSourceId</c> when opening the channel.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
+    /// <returns>An enumerable containing, per channel, its sources (default first).</returns>
+    [Authorize]
+    [HttpGet("LiveTv/Sources")]
+    public async Task<ActionResult<IEnumerable<ChannelSourcesResponse>>> GetLiveTvSources(CancellationToken cancellationToken)
+    {
+        Plugin plugin = Plugin.Instance;
+        IReadOnlyList<BaseItem> items = libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.LiveTvChannel],
+        });
+
+        List<ChannelSourcesResponse> result = [];
+        foreach (BaseItem item in items)
+        {
+            // Only this plugin's channels: their external id is a GUID carrying the Xtream stream id.
+            if (!Guid.TryParse(item.ExternalId, out Guid externalId))
+            {
+                continue;
+            }
+
+            StreamService.FromGuid(externalId, out int prefix, out int streamId, out int _, out int _);
+            if (prefix != StreamService.LiveTvPrefix)
+            {
+                continue;
+            }
+
+            result.Add(new ChannelSourcesResponse
+            {
+                ItemId = item.Id.ToString("N", CultureInfo.InvariantCulture),
+                StreamId = streamId,
+                GroupKey = await plugin.StreamService.GetLiveGroupKey(streamId, cancellationToken).ConfigureAwait(false),
+                Sources = await plugin.StreamService.GetLiveSources(streamId, cancellationToken).ConfigureAwait(false),
+            });
+        }
+
+        return Ok(result);
     }
 
     /// <summary>
