@@ -1,3 +1,31 @@
+// The page's own styles, injected from the script: the shared Xtream.css is
+// served without a version, so browsers keep showing a stale copy after an
+// update and new rules never reach an already-used dashboard.
+const liveStyles = `
+.live-groups-summary { margin: 0.5em 0 1em; font-weight: bold; }
+.live-group-section { margin-bottom: 1.8em; }
+.live-group-header { display: flex; align-items: center; gap: 0.6em; flex-wrap: wrap; margin-bottom: 0.4em; }
+.live-group-header h3 { margin: 0.4em 0.6em 0.4em 0; }
+.live-group-bulk { padding: 0.25em 1em; margin: 0; }
+.live-group-rows { display: grid; grid-template-columns: repeat(auto-fill, minmax(21em, 1fr)); gap: 0.15em 1.5em; }
+.live-group-row { display: flex; align-items: center; gap: 0.6em; min-height: 2.6em; padding: 0.2em 0.4em; border-radius: 0.4em; cursor: pointer; }
+.live-group-row:hover { background: rgba(255, 255, 255, 0.06); }
+.live-group-row input { flex: none; width: 1.25em; height: 1.25em; margin: 0; }
+.live-group-text { display: flex; flex-direction: column; gap: 0.2em; min-width: 0; }
+.live-group-name { font-weight: 600; overflow-wrap: anywhere; }
+.live-group-badges { display: flex; flex-wrap: wrap; gap: 0.3em; }
+.live-group-badge { padding: 0 0.45em; border-radius: 0.4em; background: rgba(255, 255, 255, 0.12); font-size: 0.8em; line-height: 1.6; white-space: nowrap; }
+.live-group-badge-catchup { background: rgba(0, 164, 220, 0.35); }
+`;
+
+const ensureLiveStyles = () => {
+  if (document.getElementById("XtreamLiveStyles")) return;
+  const style = document.createElement("style");
+  style.id = "XtreamLiveStyles";
+  style.textContent = liveStyles;
+  document.head.appendChild(style);
+};
+
 export default function (view) {
   view.addEventListener("viewshow", () => import(
     ApiClient.getUrl("web/ConfigurationPage", {
@@ -7,6 +35,7 @@ export default function (view) {
   ).then((Xtream) => {
     const pluginId = Xtream.pluginConfig.UniqueId;
     Xtream.setTabs(1);
+    ensureLiveStyles();
 
     const visible = view.querySelector("#Visible");
     const timezone = view.querySelector("#CatchupTimeZone");
@@ -77,6 +106,10 @@ export default function (view) {
         }
         section.appendChild(header);
 
+        const rows = document.createElement("div");
+        rows.className = "live-group-rows";
+        section.appendChild(rows);
+
         for (const item of items) {
           const row = document.createElement("label");
           row.className = "live-group-row";
@@ -88,13 +121,19 @@ export default function (view) {
             updateSummary();
           });
           row.appendChild(checkbox);
+          const text = document.createElement("span");
+          text.className = "live-group-text";
           const name = document.createElement("span");
           name.className = "live-group-name";
           name.textContent = item.Name;
-          row.appendChild(name);
-          for (const quality of item.Qualities) row.appendChild(badge(quality));
-          if (item.HasCatchup) row.appendChild(badge("catch-up", "catchup"));
-          section.appendChild(row);
+          text.appendChild(name);
+          const badges = document.createElement("span");
+          badges.className = "live-group-badges";
+          if (item.HasCatchup) badges.appendChild(badge("catch-up", "catchup"));
+          for (const quality of item.Qualities) badges.appendChild(badge(quality));
+          text.appendChild(badges);
+          row.appendChild(text);
+          rows.appendChild(row);
         }
         list.appendChild(section);
       }
