@@ -306,7 +306,10 @@ public class XtreamController(IXtreamClient xtreamClient, ILibraryManager librar
     /// <summary>
     /// Replace the Live TV selection of a language by the given channels. Selecting a channel enables
     /// the stream carrying its catch-up archive when there is one; all its qualities are then offered
-    /// as sources. Persists the configuration, which refreshes the Live TV channels.
+    /// as sources. The selection is written to disk but the Live TV channels are NOT refreshed here:
+    /// the page saves the plugin configuration right after, and that save is what queues the guide
+    /// refresh. Queuing it from both calls made the second one cancel the first, and the refresh
+    /// never ran.
     /// </summary>
     /// <param name="language">The language prefix of the provider categories, e.g. "FR".</param>
     /// <param name="keys">The keys of the channels to keep selected.</param>
@@ -320,7 +323,8 @@ public class XtreamController(IXtreamClient xtreamClient, ILibraryManager librar
         string wanted = string.IsNullOrWhiteSpace(language) ? plugin.Configuration.LiveLanguage : language;
         int selected = await plugin.StreamService.SetLiveGroupSelection(wanted, keys, cancellationToken).ConfigureAwait(false);
         plugin.Configuration.LiveLanguage = wanted.Trim().ToUpperInvariant();
-        plugin.UpdateConfiguration(plugin.Configuration);
+        plugin.SaveConfiguration();
+        plugin.StreamService.InvalidateLiveVariants();
         return Ok(selected);
     }
 

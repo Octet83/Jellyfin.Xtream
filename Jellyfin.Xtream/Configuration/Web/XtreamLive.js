@@ -179,9 +179,18 @@ export default function (view) {
       Dashboard.showLoadingMsg();
       const lang = (language.value.trim() || "FR").toUpperCase();
 
-      // The settings first, then the selection: the selection endpoint edits and
-      // saves the configuration server-side, which also refreshes the channels.
-      ApiClient.getPluginConfiguration(pluginId).then((config) => {
+      // The selection first (the server rewrites the configured streams), then
+      // the settings on top of the configuration it produced. Only that second
+      // save queues the guide refresh: one refresh, never one cancelling another.
+      const saveSelection = loaded
+        ? ApiClient.fetch({
+          type: "POST",
+          url: ApiClient.getUrl(`Xtream/LiveGroups?language=${encodeURIComponent(lang)}`),
+          data: JSON.stringify([...selected]),
+          contentType: "application/json",
+        })
+        : Promise.resolve();
+      saveSelection.then(() => ApiClient.getPluginConfiguration(pluginId)).then((config) => {
         config.IsCatchupVisible = visible.checked;
         config.CatchupTimeZoneId = timezone.value.trim() || "Pacific/Noumea";
         config.LiveAtCaledonianTime = liveCaledonian.checked;
@@ -189,14 +198,6 @@ export default function (view) {
         config.MergeQualityVariants = mergeQualities.checked;
         config.LiveLanguage = lang;
         return ApiClient.updatePluginConfiguration(pluginId, config);
-      }).then((result) => {
-        if (!loaded) return result;
-        return ApiClient.fetch({
-          type: "POST",
-          url: ApiClient.getUrl(`Xtream/LiveGroups?language=${encodeURIComponent(lang)}`),
-          data: JSON.stringify([...selected]),
-          contentType: "application/json",
-        }).then(() => result);
       }).then((result) => {
         Dashboard.processPluginConfigurationUpdateResult(result);
       }).catch((error) => {
