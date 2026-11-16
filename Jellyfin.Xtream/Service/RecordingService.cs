@@ -49,6 +49,10 @@ public sealed class RecordingService : IDisposable
 {
     private const int BufferSize = 81920;
 
+    private const int TsPacketSize = 188;
+
+    private static readonly TimeSpan HealthyConnection = TimeSpan.FromSeconds(30);
+
     private static readonly HttpStatusCode[] _redirects =
     [
         HttpStatusCode.Moved,
@@ -493,16 +497,15 @@ public sealed class RecordingService : IDisposable
                 duration.TotalMinutes.ToString("F1", CultureInfo.InvariantCulture),
                 recordingPath);
 
+            WriteRecordingNfo(timer, recordingPath);
             await RecordStreamToFileAsync(url, recordingPath, duration, cts.Token).ConfigureAwait(false);
-            timer.Status = RecordingStatus.Completed;
-            _logger.LogInformation("Recording of timer {Id} completed: {Path}", timer.Id, recordingPath);
         }
         catch (OperationCanceledException)
         {
             // Reaching the requested duration or a manual cancellation is the normal way for an
             // infinite live recording to stop; any captured bytes are kept.
             timer.Status = RecordingStatus.Completed;
-            _logger.LogInformation("Recording of timer {Id} stopped: {Path}", timer.Id, recordingPath);
+            _logger.LogInformation("Recording of timer {Id} completed: {Path}", timer.Id, recordingPath);
         }
         catch (Exception ex)
         {
@@ -518,19 +521,74 @@ public sealed class RecordingService : IDisposable
         TriggerRefresh(recordingPath);
         _libraryMonitor.ReportFileSystemChangeComplete(recordingPath, false);
 
-        if (File.Exists(recordingPath))
+        if (!File.Exists(recordingPath))
         {
-            timer.RecordingPath = recordingPath;
-            timer.Status = RecordingStatus.Completed;
-            UpdateTimerInternal(timer);
+            DeleteNfo(recordingPath);
         }
-        else
+
+        // A finished timer is no longer a scheduled recording: keeping it made it show as
+        // still "scheduled" in clients until the next server restart.
+        RemoveTimer(timer.Id);
+    }
+
+    /// <summary>
+    /// Records the live stream at <paramref name="url"/> into <paramref name="targetFile"/> for
+    /// <paramref name="duration"/>. IPTV providers close the connection every few minutes (and whenever
+    /// another connection of the same account reconnects): each time, the stream is reopened and the
+    /// recording goes on in the same file, until the duration has elapsed.
+    /// </summary>
+    private async Task RecordStreamToFileAsync(string url, string targetFile, TimeSpan duration, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(targetFile) ?? throw new InvalidOperationException("Invalid recording path."));
+
+        // The live stream is infinite, so the recording is bounded by its duration. Reaching it raises an
+        // OperationCanceledException, which the caller handles as the normal end of a recording.
+        using CancellationTokenSource durationSource = new(duration);
+        using CancellationTokenSource linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, durationSource.Token);
+        CancellationToken token = linkedSource.Token;
+
+        FileStream output = new(targetFile, FileMode.CreateNew, FileAccess.Write, FileShare.Read, BufferSize, FileOptions.Asynchronous);
+        await using (output.ConfigureAwait(false))
         {
-            RemoveTimer(timer.Id);
+            int attempt = 0;
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                DateTime connectedAt = DateTime.UtcNow;
+                try
+                {
+                    await CopyLiveStreamAsync(url, output, token).ConfigureAwait(false);
+                    _logger.LogInformation("Recording upstream for {Path} ended; reconnecting.", targetFile);
+                }
+                catch (Exception ex) when (ex is HttpRequestException or IOException
+                    || (ex is OperationCanceledException && !token.IsCancellationRequested))
+                {
+                    // The last case is an HTTP timeout, not the end of the recording.
+                    _logger.LogWarning("Recording upstream for {Path} failed ({Message}); reconnecting.", targetFile, ex.Message);
+                }
+
+                // A cut may leave half a transport packet behind: drop it so what follows stays aligned.
+                long aligned = output.Length - (output.Length % TsPacketSize);
+                if (aligned != output.Length)
+                {
+                    output.SetLength(aligned);
+                    output.Seek(0, SeekOrigin.End);
+                }
+
+                await output.FlushAsync(token).ConfigureAwait(false);
+
+                // Accounts are capped in simultaneous connections: a recording that reconnects at once
+                // after being evicted would fight the viewer (or another recording) every second. Only
+                // a connection that held for a while counts as healthy; otherwise wait longer each time.
+                bool held = DateTime.UtcNow - connectedAt >= HealthyConnection;
+                attempt = held ? 0 : attempt + 1;
+                int delaySeconds = held ? 1 : Math.Min(5 * attempt, 60);
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), token).ConfigureAwait(false);
+            }
         }
     }
 
-    private async Task RecordStreamToFileAsync(string url, string targetFile, TimeSpan duration, CancellationToken cancellationToken)
+    private async Task CopyLiveStreamAsync(string url, Stream output, CancellationToken cancellationToken)
     {
         HttpClient client = _httpClientFactory.CreateClient(NamedClient.Default);
         HttpResponseMessage response = await client
@@ -549,23 +607,54 @@ public sealed class RecordingService : IDisposable
 
         using (response)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(targetFile) ?? throw new InvalidOperationException("Invalid recording path."));
-
-            FileStream output = new(targetFile, FileMode.CreateNew, FileAccess.Write, FileShare.Read, BufferSize, FileOptions.Asynchronous);
-            await using (output.ConfigureAwait(false))
+            // An error page must not end up in the recording.
+            response.EnsureSuccessStatusCode();
+            Stream input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            await using (input.ConfigureAwait(false))
             {
-                // The live stream is infinite, so the recording is bounded by its duration.
-                using CancellationTokenSource durationSource = new(duration);
-                using CancellationTokenSource linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, durationSource.Token);
-
-                Stream input = await response.Content.ReadAsStreamAsync(linkedSource.Token).ConfigureAwait(false);
-                await using (input.ConfigureAwait(false))
-                {
-                    // The infinite live stream is bounded by the linked duration/cancellation token.
-                    // The resulting OperationCanceledException is handled by the caller as a normal stop.
-                    await input.CopyToAsync(output, BufferSize, linkedSource.Token).ConfigureAwait(false);
-                }
+                await input.CopyToAsync(output, BufferSize, cancellationToken).ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>
+    /// Writes a sidecar NFO naming the recording and locking its metadata. Without it the recordings
+    /// library matches the file name against movie databases ("LIGUE 1+ 1 2026_11_16" became a film).
+    /// </summary>
+    private void WriteRecordingNfo(TimerInfo timer, string recordingPath)
+    {
+        try
+        {
+            DateTime start = TimeZoneInfo.ConvertTimeFromUtc(
+                timer.StartDate.Kind == DateTimeKind.Local
+                    ? timer.StartDate.ToUniversalTime()
+                    : DateTime.SpecifyKind(timer.StartDate, DateTimeKind.Utc),
+                StreamService.GetCatchupTimeZone());
+            string title = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} · {1:dd/MM/yyyy HH:mm}",
+                timer.Name,
+                start);
+            string xml = "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n<movie>\n  <title>"
+                + WebUtility.HtmlEncode(title)
+                + "</title>\n  <lockdata>true</lockdata>\n</movie>\n";
+            File.WriteAllText(Path.ChangeExtension(recordingPath, ".nfo"), xml);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Could not write the NFO of recording {Path}", recordingPath);
+        }
+    }
+
+    private void DeleteNfo(string recordingPath)
+    {
+        try
+        {
+            File.Delete(Path.ChangeExtension(recordingPath, ".nfo"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Could not delete the NFO of recording {Path}", recordingPath);
         }
     }
 
