@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "Enregistrements : reprise automatique après une coupure du flux (le fichier continue jusqu'à la fin du créneau), titre verrouillé par fichier NFO (plus d'association à un film), et les enregistrements terminés quittent la liste des programmés.",
+        "checksum": "4b90ac5b06e13e2e53cad98263d07123",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.13.0/octet-xtream_0.9.13.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-11-16T04:43:50Z",
+        "version": "0.9.13.0"
+      },
+      {
         "changelog": "## Le guide s'actualise bien après un enregistrement\n\nEnregistrer la page Live TV relançait deux fois « Actualiser le guide » coup sur coup : la seconde relance annulait la première et la tâche ne repartait plus. Jellyfin gardait donc l'ancienne liste de chaînes. La page ne déclenche plus qu'une seule actualisation par enregistrement.\n\nÀ installer puis redémarrer Jellyfin. Ensuite, ouvre la page Live TV du plugin et clique sur **Save** : la liste des chaînes se met à jour au bout de quelques minutes.\n",
         "checksum": "5a0734dad5707d10c3d26fbe888c435f",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.12.2/octet-xtream_0.9.12.2.zip",
