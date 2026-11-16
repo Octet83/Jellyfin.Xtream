@@ -24,12 +24,14 @@ namespace Jellyfin.Xtream.Service;
 /// <summary>
 /// A provider channel name split into the channel it designates and the quality it is offered in.
 /// Providers list every quality of a channel as a separate stream ("FR| TF1 HD", "FR| TF1 FHD",
-/// "FR| TF1 4K", "FR| TF1 FHD ᴿᴬᵂ"); streams sharing the same <see cref="Key"/> are variants of one channel.
+/// "FR| TF1 4K", "FR| TF1 FHD ᴿᴬᵂ"); streams of the same language sharing the same <see cref="Key"/> are variants of one channel.
 /// </summary>
-/// <param name="Key">The grouping key shared by every quality variant of a channel: country prefix plus the name stripped of quality tokens.</param>
+/// <param name="Prefix">The prefix of the name ("FR", "SP", "PRIME"), upper-cased; empty when there is none.</param>
+/// <param name="Key">The channel name stripped of its prefix, quality tokens and spaces ("BEINSPORTS1").</param>
+/// <param name="Display">The channel name stripped of its prefix and quality tokens, readable ("BEIN SPORTS 1").</param>
 /// <param name="Label">The short quality label, e.g. "HD", "FHD", "4K" or "FHD RAW".</param>
 /// <param name="Rank">The quality rank, higher is better; 0 when the name carries no quality token.</param>
-public readonly partial record struct QualityName(string Key, string Label, int Rank)
+public readonly partial record struct QualityName(string Prefix, string Key, string Display, string Label, int Rank)
 {
     /// <summary>
     /// The label used when a name carries no quality token.
@@ -125,8 +127,24 @@ public readonly partial record struct QualityName(string Key, string Label, int 
 
         // Spaces are dropped from the key: providers spell the same channel "6TER" and "6 TER",
         // "BFMTV" and "BFM TV" depending on the quality category.
-        result = new QualityName(prefix + "|" + string.Concat(rest), label, rank);
+        result = new QualityName(prefix, string.Concat(rest), string.Join(' ', rest), label, rank);
         return true;
+    }
+
+    /// <summary>
+    /// Gets the prefix of a stream or category name ("FR| FRANCE HD" → "FR"), upper-cased.
+    /// </summary>
+    /// <param name="name">The raw provider name.</param>
+    /// <returns>The prefix, or an empty string when the name has none.</returns>
+    public static string ParsePrefix(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return string.Empty;
+        }
+
+        Match match = PrefixRegex().Match(Fold(name));
+        return match.Success ? match.Groups[1].Value : string.Empty;
     }
 
     /// <summary>
@@ -149,7 +167,7 @@ public readonly partial record struct QualityName(string Key, string Label, int 
     }
 
     // Country / group prefix: "FR| TF1 HD", "SP│ BEIN SPORTS 1".
-    [GeneratedRegex(@"^\s*([A-Z0-9]{2,4})\s*[|│┃｜]\s*")]
+    [GeneratedRegex(@"^\s*([A-Z0-9]{2,6})\s*[|│┃｜]\s*")]
     private static partial Regex PrefixRegex();
 
     [GeneratedRegex(@"[A-Z0-9+]+")]

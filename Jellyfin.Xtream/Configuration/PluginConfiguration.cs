@@ -115,5 +115,11 @@ public class PluginConfiguration : BasePluginConfiguration
     /// the qualities found in the provider catalogue that were not selected.
     /// </summary>
     public bool MergeQualityVariants { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets the language prefix of the provider categories listed on the Live TV selection
+    /// page ("FR" lists the channels filed under "FR| …" categories).
+    /// </summary>
+    public string LiveLanguage { get; set; } = "FR";
 }
 #pragma warning restore CA2227

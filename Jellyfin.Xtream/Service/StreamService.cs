@@ -20,6 +20,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Api.Models;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
@@ -101,6 +102,10 @@ public partial class StreamService(IXtreamClient xtreamClient)
     // The quality-variant index needs the provider's whole live catalogue (tens of thousands of
     // streams), so it is kept for a while instead of being rebuilt on every channel open.
     private static readonly TimeSpan _variantTtl = TimeSpan.FromMinutes(15);
+
+    // Category name fragments marking looping / on-demand / pay-per-view event feeds, which are not
+    // TV channels: "FR| 24/7 BEIN CINEMA", "FR| CANAL PLAY", "FR| LUXPLAY VIP", "FR| SOCCER PPV".
+    private static readonly string[] _onDemandMarkers = ["24/7", "PLAY", "PPV", "VOD"];
 
     private volatile VariantIndex? _variantIndex;
 
@@ -217,7 +222,7 @@ public partial class StreamService(IXtreamClient xtreamClient)
         VariantIndex index = await GetVariantIndex(cancellationToken).ConfigureAwait(false);
         if (!index.ByChannel.TryGetValue(channelStreamId, out IReadOnlyList<Variant>? variants))
         {
-            variants = [new Variant(channelStreamId, 0, QualityName.StandardLabel, 0, false, string.Empty)];
+            variants = [new Variant(channelStreamId, 0, QualityName.StandardLabel, 0, false, string.Empty, 0, string.Empty, string.Empty)];
         }
 
         bool forcedLive = config.LiveTvOverrides.TryGetValue(channelStreamId, out ChannelOverrides? overrides)
@@ -319,9 +324,10 @@ public partial class StreamService(IXtreamClient xtreamClient)
     };
 
     /// <summary>
-    /// Builds (or returns the cached) index of the quality variants of every configured channel.
-    /// Variants are looked up in the provider's whole live catalogue, not only the configured selection:
-    /// selecting "TF1 HD" is enough to be offered "TF1 FHD" and "TF1 4K".
+    /// Builds (or returns the cached) index of the provider's live catalogue grouped by channel:
+    /// streams that are the same channel in the same language, whatever their quality, form a group.
+    /// Variants are looked up in the whole catalogue, not only the configured selection: selecting
+    /// "TF1 HD" is enough to be offered "TF1 FHD" and "TF1 4K".
     /// </summary>
     private async Task<VariantIndex> GetVariantIndex(CancellationToken cancellationToken)
     {
@@ -333,26 +339,49 @@ public partial class StreamService(IXtreamClient xtreamClient)
 
         PluginConfiguration config = Plugin.Instance.Configuration;
         List<StreamInfo> all = await xtreamClient.GetLiveStreamsAsync(Plugin.Instance.Creds, cancellationToken).ConfigureAwait(false);
+        List<Category> categories = await xtreamClient.GetLiveCategoryAsync(Plugin.Instance.Creds, cancellationToken).ConfigureAwait(false);
+        Dictionary<int, string> categoryNames = categories
+            .GroupBy(c => c.CategoryId)
+            .ToDictionary(g => g.Key, g => g.First().CategoryName);
 
-        Dictionary<string, List<Variant>> byKey = new(StringComparer.Ordinal);
+        Dictionary<string, LiveGroup> groups = new(StringComparer.Ordinal);
+        Dictionary<int, string> groupKeys = [];
+        Dictionary<int, List<int>> streamsByCategory = [];
         foreach (StreamInfo stream in all)
         {
+            if (!stream.CategoryId.HasValue)
+            {
+                continue;
+            }
+
+            int categoryId = stream.CategoryId.Value;
+            if (!streamsByCategory.TryGetValue(categoryId, out List<int>? ids))
+            {
+                ids = [];
+                streamsByCategory[categoryId] = ids;
+            }
+
+            ids.Add(stream.StreamId);
+
             if (!QualityName.TryParse(stream.Name, out QualityName quality))
             {
                 continue;
             }
 
-            if (!byKey.TryGetValue(quality.Key, out List<Variant>? group))
+            categoryNames.TryGetValue(categoryId, out string? categoryName);
+            string language = GroupLanguage(quality.Prefix, QualityName.ParsePrefix(categoryName));
+            string key = language + "|" + quality.Key;
+            if (!groups.TryGetValue(key, out LiveGroup? group))
             {
-                group = [];
-                byKey[quality.Key] = group;
+                group = new LiveGroup(key, language);
+                groups[key] = group;
             }
 
-            group.Add(new Variant(stream.StreamId, stream.Num, quality.Label, quality.Rank, stream.TvArchive, stream.Name));
+            group.Members.Add(new Variant(stream.StreamId, stream.Num, quality.Label, quality.Rank, stream.TvArchive, stream.Name, categoryId, categoryName ?? string.Empty, quality.Display));
+            groupKeys[stream.StreamId] = key;
         }
 
         Dictionary<int, IReadOnlyList<Variant>> byChannel = [];
-        Dictionary<int, string> groupKeys = [];
         Dictionary<string, Variant> representatives = new(StringComparer.Ordinal);
         foreach (StreamInfo channel in all)
         {
@@ -361,31 +390,29 @@ public partial class StreamService(IXtreamClient xtreamClient)
                 continue;
             }
 
-            bool parsed = QualityName.TryParse(channel.Name, out QualityName quality);
-            Variant self = new(
-                channel.StreamId,
-                channel.Num,
-                parsed ? quality.Label : QualityName.StandardLabel,
-                parsed ? quality.Rank : 0,
-                channel.TvArchive,
-                channel.Name);
-
-            List<Variant> list = [self];
-            if (parsed && byKey.TryGetValue(quality.Key, out List<Variant>? candidates))
+            if (!groupKeys.TryGetValue(channel.StreamId, out string? groupKey))
             {
-                // One stream per quality label: providers often list the same quality several times
-                // (regional copies, backups). Prefer the catch-up capable one, then the provider order.
-                list.AddRange(candidates
-                    .Where(v => v.StreamId != self.StreamId && !string.Equals(v.Label, self.Label, StringComparison.Ordinal))
-                    .GroupBy(v => v.Label, StringComparer.Ordinal)
-                    .Select(g => g.OrderByDescending(v => v.HasCatchup).ThenBy(v => v.Num).First())
-                    .OrderByDescending(v => v.Rank)
-                    .ThenBy(v => v.Label, StringComparer.Ordinal));
+                // Unparseable name: a channel on its own.
+                groupKey = UngroupedKey(channel.StreamId);
+                groupKeys[channel.StreamId] = groupKey;
+                byChannel[channel.StreamId] = [new Variant(channel.StreamId, channel.Num, QualityName.StandardLabel, 0, channel.TvArchive, channel.Name, channel.CategoryId.Value, string.Empty, channel.Name)];
+                continue;
             }
 
+            LiveGroup group = groups[groupKey];
+            Variant self = group.Members.First(v => v.StreamId == channel.StreamId);
+
+            // One stream per quality label: providers often list the same quality several times
+            // (regional copies, backups). Prefer the catch-up capable one, then the provider order.
+            List<Variant> list = [self];
+            list.AddRange(group.Members
+                .Where(v => v.StreamId != self.StreamId && !string.Equals(v.Label, self.Label, StringComparison.Ordinal))
+                .GroupBy(v => v.Label, StringComparer.Ordinal)
+                .Select(g => g.OrderByDescending(v => v.HasCatchup).ThenBy(v => v.Num).First())
+                .OrderByDescending(v => v.Rank)
+                .ThenBy(v => v.Label, StringComparer.Ordinal));
             byChannel[channel.StreamId] = list;
-            string groupKey = parsed ? quality.Key : UngroupedKey(channel.StreamId);
-            groupKeys[channel.StreamId] = groupKey;
+
             if (!representatives.TryGetValue(groupKey, out Variant? current)
                 || CompareRepresentative(self, current, config) < 0)
             {
@@ -394,11 +421,199 @@ public partial class StreamService(IXtreamClient xtreamClient)
         }
 
         // The selected channels merged into another one: every channel of a group but its representative.
-        HashSet<int> mergedAway = [.. groupKeys.Where(kv => representatives[kv.Value].StreamId != kv.Key).Select(kv => kv.Key)];
+        HashSet<int> mergedAway = [.. byChannel.Keys.Where(id => representatives.TryGetValue(groupKeys[id], out Variant? r) && r.StreamId != id)];
 
-        index = new VariantIndex(DateTime.UtcNow + _variantTtl, byChannel, groupKeys, mergedAway);
+        index = new VariantIndex(DateTime.UtcNow + _variantTtl, byChannel, groupKeys, mergedAway, groups, streamsByCategory);
         _variantIndex = index;
         return index;
+    }
+
+    /// <summary>
+    /// The language a stream is grouped under. Providers file a channel under its language category
+    /// ("FR| SPORTS HD") but prefix the streams inconsistently ("FR|", "SP|", "ENF|", "PRIME|"), so the
+    /// category prefix wins. A two-letter stream prefix that differs from it is kept: it names another
+    /// country's feed of the channel ("AF| CANAL+ SPORT" in a French category), not the same channel.
+    /// Categories without a language prefix ("WORLD LIVE SPORTS", "4K UHD 3840P") form a language of
+    /// their own, the empty one: their streams never merge with a language's channels.
+    /// </summary>
+    private static string GroupLanguage(string streamPrefix, string categoryPrefix)
+    {
+        if (categoryPrefix.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        bool foreignFeed = streamPrefix.Length == 2
+            && !string.Equals(streamPrefix, categoryPrefix, StringComparison.Ordinal)
+            && !string.Equals(streamPrefix, "SP", StringComparison.Ordinal);
+        return foreignFeed ? streamPrefix : categoryPrefix;
+    }
+
+    /// <summary>
+    /// Whether a category holds looping / on-demand / pay-per-view event feeds rather than TV channels.
+    /// </summary>
+    private static bool IsOnDemandCategory(string categoryName) =>
+        _onDemandMarkers.Any(marker => categoryName.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Gets the channels of a language for the selection page: one entry per channel whatever its
+    /// qualities, with the qualities on offer, whether a catch-up archive exists and whether it is selected.
+    /// </summary>
+    /// <param name="language">The language prefix, e.g. "FR".</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The channels, sorted by category then name.</returns>
+    public async Task<List<LiveGroupResponse>> GetLiveGroups(string language, CancellationToken cancellationToken)
+    {
+        PluginConfiguration config = Plugin.Instance.Configuration;
+        VariantIndex index = await GetVariantIndex(cancellationToken).ConfigureAwait(false);
+        string wanted = language.Trim().ToUpperInvariant();
+        List<LiveGroupResponse> result = [];
+        foreach (LiveGroup group in index.Groups.Values)
+        {
+            if (!string.Equals(group.Language, wanted, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            Variant representative = PickRepresentative(group);
+            result.Add(new LiveGroupResponse
+            {
+                Key = group.Key,
+                Name = representative.Display,
+                Category = QualityName.TryParse(representative.CategoryName, out QualityName category) ? category.Display : representative.CategoryName,
+                Qualities = [.. group.Members
+                    .GroupBy(v => v.Label, StringComparer.Ordinal)
+                    .OrderByDescending(g => g.First().Rank)
+                    .ThenBy(g => g.Key, StringComparer.Ordinal)
+                    .Select(g => g.Key)],
+                HasCatchup = group.Members.Any(v => v.HasCatchup),
+                OnDemand = IsOnDemandCategory(representative.CategoryName),
+                Selected = group.Members.Any(v => IsConfigured(config.LiveTv, v.CategoryId, v.StreamId)),
+                StreamCount = group.Members.Count,
+            });
+        }
+
+        return [.. result
+            .OrderBy(g => g.OnDemand)
+            .ThenBy(g => g.Category, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(g => g.Name, StringComparer.OrdinalIgnoreCase)];
+    }
+
+    /// <summary>
+    /// Replaces the Live TV selection of a language by the given channels. A selected channel gets the
+    /// stream that best represents it enabled (the plain HD one carrying the catch-up archive when there
+    /// is one, so the Caledonian time-shift works); its other qualities need no selection, they are
+    /// offered as sources of the channel. Every stream of an unselected channel is disabled. Channels of
+    /// other languages are left untouched. The caller persists the configuration.
+    /// </summary>
+    /// <param name="language">The language prefix, e.g. "FR".</param>
+    /// <param name="selectedKeys">The keys of the channels to keep selected.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The number of channels selected.</returns>
+    public async Task<int> SetLiveGroupSelection(string language, IReadOnlyCollection<string> selectedKeys, CancellationToken cancellationToken)
+    {
+        PluginConfiguration config = Plugin.Instance.Configuration;
+        VariantIndex index = await GetVariantIndex(cancellationToken).ConfigureAwait(false);
+        string wanted = language.Trim().ToUpperInvariant();
+        HashSet<string> keep = new(selectedKeys, StringComparer.Ordinal);
+        HashSet<int> emptied = [];
+        int selected = 0;
+        foreach (LiveGroup group in index.Groups.Values)
+        {
+            if (!string.Equals(group.Language, wanted, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (keep.Contains(group.Key))
+            {
+                selected++;
+                Variant representative = PickRepresentative(group);
+                if (!IsConfigured(config.LiveTv, representative.CategoryId, representative.StreamId))
+                {
+                    if (!config.LiveTv.TryGetValue(representative.CategoryId, out HashSet<int>? set))
+                    {
+                        set = [];
+                        config.LiveTv[representative.CategoryId] = set;
+                    }
+
+                    set.Add(representative.StreamId);
+                }
+
+                continue;
+            }
+
+            foreach (Variant member in group.Members)
+            {
+                if (!config.LiveTv.TryGetValue(member.CategoryId, out HashSet<int>? set))
+                {
+                    continue;
+                }
+
+                if (set.Count == 0)
+                {
+                    // An empty set means "the whole category": spell it out to remove one stream.
+                    set = [.. index.StreamsByCategory[member.CategoryId]];
+                    config.LiveTv[member.CategoryId] = set;
+                }
+
+                set.Remove(member.StreamId);
+                if (set.Count == 0)
+                {
+                    emptied.Add(member.CategoryId);
+                }
+            }
+        }
+
+        // A category left without any stream is dropped: an empty set would mean "all of it".
+        foreach (int categoryId in emptied)
+        {
+            if (config.LiveTv.TryGetValue(categoryId, out HashSet<int>? set) && set.Count == 0)
+            {
+                config.LiveTv.Remove(categoryId);
+            }
+        }
+
+        return selected;
+    }
+
+    /// <summary>
+    /// The stream enabled when a channel is selected: the plain HD one with a catch-up archive first,
+    /// then by the same order as the merge (plain HD, FHD, the rest).
+    /// </summary>
+    private Variant PickRepresentative(LiveGroup group)
+    {
+        PluginConfiguration config = Plugin.Instance.Configuration;
+        Variant best = group.Members[0];
+        foreach (Variant candidate in group.Members.Skip(1))
+        {
+            int byCatchup = candidate.HasCatchup.CompareTo(best.HasCatchup);
+            if (byCatchup != 0)
+            {
+                best = byCatchup > 0 ? candidate : best;
+                continue;
+            }
+
+            // Same quality listed twice (regional copy, backup): keep the one already enabled, so
+            // saving the page again never swaps a channel for its twin.
+            if (string.Equals(candidate.Label, best.Label, StringComparison.Ordinal))
+            {
+                bool candidateOn = IsConfigured(config.LiveTv, candidate.CategoryId, candidate.StreamId);
+                bool bestOn = IsConfigured(config.LiveTv, best.CategoryId, best.StreamId);
+                if (candidateOn != bestOn)
+                {
+                    best = candidateOn ? candidate : best;
+                    continue;
+                }
+            }
+
+            if (CompareRepresentative(candidate, best, config) < 0)
+            {
+                best = candidate;
+            }
+        }
+
+        return best;
     }
 
     /// <summary>
@@ -731,7 +946,18 @@ public partial class StreamService(IXtreamClient xtreamClient)
     [GeneratedRegex(@"\[([^\]]+)\]|[|│┃｜]\s*([^|│┃｜]+?)\s*[|│┃｜]")]
     private static partial Regex TagRegex();
 
-    private sealed record Variant(int StreamId, int Num, string Label, int Rank, bool HasCatchup, string Name);
+    private sealed record Variant(int StreamId, int Num, string Label, int Rank, bool HasCatchup, string Name, int CategoryId, string CategoryName, string Display);
 
-    private sealed record VariantIndex(DateTime Expiry, Dictionary<int, IReadOnlyList<Variant>> ByChannel, Dictionary<int, string> GroupKeys, HashSet<int> MergedAway);
+    private sealed record LiveGroup(string Key, string Language)
+    {
+        public List<Variant> Members { get; } = [];
+    }
+
+    private sealed record VariantIndex(
+        DateTime Expiry,
+        Dictionary<int, IReadOnlyList<Variant>> ByChannel,
+        Dictionary<int, string> GroupKeys,
+        HashSet<int> MergedAway,
+        Dictionary<string, LiveGroup> Groups,
+        Dictionary<int, List<int>> StreamsByCategory);
 }

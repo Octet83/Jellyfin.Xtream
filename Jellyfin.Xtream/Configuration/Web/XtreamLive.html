@@ -50,19 +50,30 @@
         <div class="sectionTitleContainer flex align-items-center">
           <h2 class="sectionTitle">Channel selection</h2>
         </div>
-        <div class="inputContainer">
-          <table class="categories-table">
-            <thead>
-              <tr>
-                <th colspan="2">Category</th>
-                <th>Display</th>
-              </tr>
-            </thead>
-            <tbody id="LiveContent">
-
-            </tbody>
-          </table>
+        <div class="fieldDescription">
+          One line per channel, whatever its qualities. Ticking a channel enables it once in Live TV with every
+          quality the provider offers (HD, FHD, 4K, …) as a source, and its catch-up archive when there is one, so it
+          can be served at Caledonian time.
         </div>
+        <div class="inputContainer">
+          <label class="inputLabel inputLabelUnfocused" for="LiveLanguage">Language</label>
+          <input is="emby-input" id="LiveLanguage" name="LiveLanguage" type="text" maxlength="6" />
+          <div class="fieldDescription">
+            Prefix of the provider categories to list, e.g. FR for the "FR| …" categories.
+          </div>
+        </div>
+        <div class="inputContainer">
+          <label class="inputLabel inputLabelUnfocused" for="LiveSearch">Filter</label>
+          <input is="emby-input" id="LiveSearch" name="LiveSearch" type="search" autocomplete="off" />
+        </div>
+        <div class="checkboxContainer checkboxContainer-withDescription">
+          <label>
+            <input is="emby-checkbox" id="LiveOnDemand" name="LiveOnDemand" type="checkbox" />
+            <span>Also list 24/7 loops, on-demand and pay-per-view feeds</span>
+          </label>
+        </div>
+        <div id="LiveGroupsSummary" class="fieldDescription live-groups-summary"></div>
+        <div id="LiveGroups" class="live-groups"></div>
         <div>
           <button is="emby-button" type="submit" class="raised button-submit block emby-button">
             <span>Save</span>

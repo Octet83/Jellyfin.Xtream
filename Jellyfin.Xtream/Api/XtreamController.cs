@@ -288,6 +288,43 @@ public class XtreamController(IXtreamClient xtreamClient, ILibraryManager librar
     }
 
     /// <summary>
+    /// Get the channels of a language for the selection page: one entry per channel whatever its
+    /// qualities.
+    /// </summary>
+    /// <param name="language">The language prefix of the provider categories, e.g. "FR".</param>
+    /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
+    /// <returns>An enumerable containing the channels.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("LiveGroups")]
+    public async Task<ActionResult<IEnumerable<LiveGroupResponse>>> GetLiveGroups([FromQuery] string? language, CancellationToken cancellationToken)
+    {
+        Plugin plugin = Plugin.Instance;
+        string wanted = string.IsNullOrWhiteSpace(language) ? plugin.Configuration.LiveLanguage : language;
+        return Ok(await plugin.StreamService.GetLiveGroups(wanted, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Replace the Live TV selection of a language by the given channels. Selecting a channel enables
+    /// the stream carrying its catch-up archive when there is one; all its qualities are then offered
+    /// as sources. Persists the configuration, which refreshes the Live TV channels.
+    /// </summary>
+    /// <param name="language">The language prefix of the provider categories, e.g. "FR".</param>
+    /// <param name="keys">The keys of the channels to keep selected.</param>
+    /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
+    /// <returns>The number of channels selected.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("LiveGroups")]
+    public async Task<ActionResult<int>> SetLiveGroups([FromQuery] string? language, [FromBody] IReadOnlyList<string> keys, CancellationToken cancellationToken)
+    {
+        Plugin plugin = Plugin.Instance;
+        string wanted = string.IsNullOrWhiteSpace(language) ? plugin.Configuration.LiveLanguage : language;
+        int selected = await plugin.StreamService.SetLiveGroupSelection(wanted, keys, cancellationToken).ConfigureAwait(false);
+        plugin.Configuration.LiveLanguage = wanted.Trim().ToUpperInvariant();
+        plugin.UpdateConfiguration(plugin.Configuration);
+        return Ok(selected);
+    }
+
+    /// <summary>
     /// Get a short EPG (TV guide) preview for the given stream, used to verify the program mapping.
     /// Returns the currently playing program followed by the upcoming entries.
     /// </summary>
