@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Sélection des chaînes : une ligne par chaîne, en français, dédoublonnée\n\nLa page **Live TV** du plugin ne liste plus toutes les catégories et tous les flux du fournisseur. Elle affiche les chaînes d'une langue (FR par défaut), **une ligne par chaîne** quelles que soient ses qualités, avec les qualités disponibles et un badge « catch-up ».\n\n- **Cocher une chaîne** l'active une seule fois dans Live TV, avec toutes ses qualités (HD, FHD, 4K…) comme sources. Quand un flux a le différé, c'est lui qui est activé, pour que la chaîne passe à l'heure calédo.\n- **Décocher une chaîne** désactive tous ses flux.\n- Les boucles 24/7, flux à la demande et pay-per-view sont masqués par défaut (case à cocher pour les afficher).\n- Filtre par nom, boutons « All / None » par catégorie, champ « Language » pour lister une autre langue. Les chaînes des autres langues ne sont pas touchées.\n\n**À faire après l'installation** : ouvrir la page Live TV du plugin et cliquer sur **Save**. C'est l'enregistrement qui relance l'actualisation du guide ; sans lui, Jellyfin garde l'ancienne liste de chaînes.\n\nÀ savoir : au premier enregistrement, les chaînes cochées seulement en 4K ou FHD passent sur leur flux HD (celui du différé). Leurs favoris sont à remettre.\n",
+        "checksum": "e82915c5aa163cef30abdd7ebe276bc3",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.12.0/octet-xtream_0.9.12.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-11-16T00:02:18Z",
+        "version": "0.9.12.0"
+      },
+      {
         "changelog": "## Une seule entrée par chaîne, avec toutes ses qualités\n\nLes chaînes sélectionnées qui sont la même chaîne en plusieurs qualités (« TF1 HD », « TF1 FHD », « TF1 4K », même préfixe pays) n'apparaissent plus qu'une fois dans Live TV. Toutes les qualités du catalogue du fournisseur, cochées ou non, restent disponibles comme sources de cette chaîne.\n\n- Nouvelle case **« Show each channel once, with its qualities »** sur la page **Live TV** du plugin, cochée par défaut. Décoche-la pour retrouver une entrée par qualité.\n- La chaîne conservée pour un groupe est la HD (celle qui porte le différé « heure calédo »), puis la FHD, puis le reste. Le choix est stable d'un rafraîchissement à l'autre.\n- Les séparateurs du fournisseur (« ##### FRANCE 4K ##### ») ne sont plus listés comme des chaînes.\n\nÀ savoir : un favori posé sur une version fusionnée (par exemple « TF1 4K ») disparaît avec elle ; il faut le remettre sur la chaîne conservée.\n\nÀ installer puis redémarrer Jellyfin. La liste des chaînes se met à jour au rafraîchissement du guide.\n",
         "checksum": "14dc4996acca95ac268b9eecdf9ff37b",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.11.0/octet-xtream_0.9.11.0.zip",
