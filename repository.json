@@ -8,6 +8,14 @@
     "owner": "Octet83",
     "versions": [
       {
+        "changelog": "## Correctif d'affichage de la page Live TV\n\nLa liste des chaînes s'affichait sans mise en forme (noms et badges collés) : le navigateur gardait en cache l'ancienne feuille de style du plugin. La page embarque désormais ses propres styles.\n\n- Une chaîne par ligne, sur plusieurs colonnes quand l'écran est large.\n- Nom en gras, badges de qualité dessous, badge « catch-up » en premier.\n\nRien d'autre ne change par rapport à la 0.9.12.0. À installer puis redémarrer Jellyfin ; si la page paraît inchangée, recharge-la en vidant le cache (Cmd+Maj+R).\n",
+        "checksum": "20ff466b709feb622c70e78070b560dc",
+        "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.12.1/octet-xtream_0.9.12.1.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-11-16T00:16:58Z",
+        "version": "0.9.12.1"
+      },
+      {
         "changelog": "## Sélection des chaînes : une ligne par chaîne, en français, dédoublonnée\n\nLa page **Live TV** du plugin ne liste plus toutes les catégories et tous les flux du fournisseur. Elle affiche les chaînes d'une langue (FR par défaut), **une ligne par chaîne** quelles que soient ses qualités, avec les qualités disponibles et un badge « catch-up ».\n\n- **Cocher une chaîne** l'active une seule fois dans Live TV, avec toutes ses qualités (HD, FHD, 4K…) comme sources. Quand un flux a le différé, c'est lui qui est activé, pour que la chaîne passe à l'heure calédo.\n- **Décocher une chaîne** désactive tous ses flux.\n- Les boucles 24/7, flux à la demande et pay-per-view sont masqués par défaut (case à cocher pour les afficher).\n- Filtre par nom, boutons « All / None » par catégorie, champ « Language » pour lister une autre langue. Les chaînes des autres langues ne sont pas touchées.\n\n**À faire après l'installation** : ouvrir la page Live TV du plugin et cliquer sur **Save**. C'est l'enregistrement qui relance l'actualisation du guide ; sans lui, Jellyfin garde l'ancienne liste de chaînes.\n\nÀ savoir : au premier enregistrement, les chaînes cochées seulement en 4K ou FHD passent sur leur flux HD (celui du différé). Leurs favoris sont à remettre.\n",
         "checksum": "e82915c5aa163cef30abdd7ebe276bc3",
         "sourceUrl": "https://github.com/Octet83/Jellyfin.Xtream/releases/download/0.9.12.0/octet-xtream_0.9.12.0.zip",
